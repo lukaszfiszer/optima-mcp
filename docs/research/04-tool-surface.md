@@ -1,156 +1,89 @@
-# 04 — Proposed tool surface (v1)
+# 04 — Tool surface (v1)
 
-Design rules applied throughout:
+Rules applied throughout:
 
-- Every tool is annotated `readOnlyHint: true`, `openWorldHint: false`.
-- Every accounting tool takes `profile` and `period` (okres obrachunkowy)
-  explicitly, and **states in its output which period it used**
-  ([`02`](02-optima-data-model.md) §2.2).
-- Every tool returns a findings document, not a table dump
-  ([`03`](03-architecture.md) §3.6, §3.7).
-- Small surface. Nine tools, not thirty — an LLM chooses well from a short,
-  clearly-differentiated menu and badly from a long one.
-
----
+- `readOnlyHint: true`, `openWorldHint: false` on every tool.
+- Every accounting tool takes `profile` and `period`, and states which period it used ([`02`](02-optima-data-model.md) §2.2).
+- Findings documents, not table dumps ([`03`](03-architecture.md) §3.7, §3.8).
+- Nine tools, not thirty. Models choose well from a short, clearly differentiated menu.
 
 ## Discovery
 
-### `optima_describe_environment`
-`profile` → what we're connected to.
+**`optima_describe_environment`** · `profile`
 
-Optima version and schema fingerprint · company databases visible · accounting
-periods with date ranges and open/closed status · which knowledge-pack concepts
-resolved against this schema and which did not · whether the login is
-appropriately read-only.
+Optima version and schema fingerprint; company DBs visible; accounting periods with date ranges and open/closed status; which knowledge-pack concepts resolved against this schema and which didn't; whether the login is appropriately read-only.
 
-**This is the honest-capabilities tool.** It tells the agent up front what will
-and won't work on this installation, instead of letting it discover that
-through failures.
+Tells the agent up front what will and won't work, instead of letting it find out through failures.
 
-### `optima_schema_map`
-`profile`, `concept?` → the resolved physical mapping for a domain concept, with
-confidence levels and the inferred relational graph. Also available as an MCP
-resource. Primarily for debugging and for growing the knowledge pack.
+**`optima_schema_map`** · `profile`, `concept?`
 
----
+Resolved physical mapping for a domain concept, with confidence levels and the inferred relational graph. Also exposed as an MCP resource. For debugging and growing the knowledge pack.
 
 ## Chart of accounts — *analiza planu kont*
 
-### `optima_chart_of_accounts_overview`
-`profile`, `period` → structural picture.
+**`optima_chart_of_accounts_overview`** · `profile`, `period`
 
-Account count by zespół (0–8) and by type (aktywa / pasywa / aktywa-pasywa /
-przychody / koszty / pozabilansowe) · analytic depth distribution · settlement
-(rozrachunkowe) accounts · dictionary-bound accounts · how many carry balances.
+Account count by zespół (0–8) and type (aktywa / pasywa / aktywa-pasywa / przychody / koszty / pozabilansowe); analytic depth distribution; rozrachunkowe accounts; dictionary-bound accounts; how many carry balances.
 
-### `optima_chart_of_accounts_analyze`
-`profile`, `period`, `checks?`, `account_prefix?` → the hygiene audit.
+**`optima_chart_of_accounts_analyze`** · `profile`, `period`, `checks?`, `account_prefix?`
 
-Rule catalogue for v1:
+v1 rule catalogue:
 
-| Check | What it catches |
+| Check | Catches |
 |---|---|
-| Synthetic accounts posted to directly | Postings that should have gone to analytics — breaks reporting granularity |
-| Type inconsistent with number | e.g. a zespół-4 account typed as *aktywa*; drives wrong statement defaults |
-| Balance on the wrong side vs declared type | An asset account sitting credit — either a misposting or a mistyped account |
-| Inconsistent analytic depth under one synthetic | `201-1-1` alongside `201-2` — the classic cause of masks missing accounts |
-| Dead accounts | Exist, never posted to in the period — clutter that hides real accounts |
-| Settlement flag inconsistent within a group | Some `201-*` rozrachunkowe, some not |
+| Synthetic accounts posted to directly | Postings that should have gone to analytics |
+| Type inconsistent with number | Zespół-4 account typed *aktywa* — drives wrong statement defaults |
+| Balance on the wrong side vs type | Asset account sitting credit: misposting or mistyped account |
+| Inconsistent analytic depth under one synthetic | `201-1-1` alongside `201-2` — classic cause of masks missing accounts |
+| Dead accounts | Exist, never posted to in the period |
+| Rozrachunkowe flag inconsistent within a group | Some `201-*` settlement, some not |
 | Dictionary binding inconsistent within a group | Some analytics bound to kontrahenci, some manual |
 | Naming inconsistency | Same counterparty named differently across analytics |
-| **Not referenced by any zestawienie** | Cross-check into the statements domain — the bridge to the flagship tool |
+| Not referenced by any zestawienie | Bridge into the statements domain |
 
-Findings ranked by PLN materiality, each with evidence and remediation.
+Ranked by PLN materiality, each with evidence and remediation.
 
-### `optima_chart_of_accounts_diff`
-`profile`, `period_a`, `period_b` → what changed when the chart was carried
-forward.
+**`optima_chart_of_accounts_diff`** · `profile`, `period_a`, `period_b`
 
-Added / removed / retyped / re-flagged accounts, and — critically — **which of
-those changes are not reflected in the statement definitions.** Because the
-chart of accounts is per-period ([`02`](02-optima-data-model.md) §2.2), this
-"copied the chart forward but not the report" gap is a structural, recurring
-failure mode rather than a one-off mistake, which is exactly what makes it
-worth a dedicated tool.
-
----
+Accounts added / removed / retyped / re-flagged between periods, and which of those changes aren't reflected in the statement definitions. Because the chart is per-period ([`02`](02-optima-data-model.md) §2.2), "copied the chart forward but not the report" is a structural recurring failure, not a one-off.
 
 ## Statements — *zestawienia księgowe*
 
-### `optima_statements_list`
-`profile`, `period` → available zestawienia (Bilans, RZiS, Cash Flow, custom),
-with position counts and last-modified where available.
+**`optima_statements_list`** · `profile`, `period`
 
-### `optima_statement_definition`
-`profile`, `period`, `statement`, `position?` → the parsed definition tree.
+Available zestawienia (Bilans, RZiS, Cash Flow, custom) with position counts and last-modified where available.
 
-Each position with its raw definition, the parsed form (account functions,
-masks, ranges, arithmetic, position references, embedded SQL), and **the
-concrete list of accounts each mask currently expands to.** Seeing the
-expansion is often enough for an accountant to spot the problem unaided.
+**`optima_statement_definition`** · `profile`, `period`, `statement`, `position?`
 
-### `optima_statement_reconcile` ⭐ **flagship**
-`profile`, `period`, `statement`, `materiality_threshold?` → the coverage audit.
+Parsed definition tree. Each position with its raw definition, the parsed form (account functions, masks, ranges, arithmetic, position refs, embedded SQL), and the concrete accounts each mask currently expands to. The expansion alone is often enough for an accountant to spot the problem.
 
-Builds the full **account → position coverage matrix** by expanding every mask
-and range against the actual chart of accounts, then reports:
+**`optima_statement_reconcile`** — flagship · `profile`, `period`, `statement`, `materiality_threshold?`
 
-- **Uncovered accounts** — non-zero balance/turnover, referenced by zero
-  positions. *The most common root cause of a balance sheet that doesn't
-  balance.* Each with the amount at stake and a suggested position to add it to.
-- **Double-counted accounts** — referenced by more than one position with the
-  same sign in the same subtree.
-- **Dangling references** — masks and ranges matching nothing; a definition
-  written against a chart of accounts that no longer exists.
-- **Function/type mismatches** — measured against Optima's own defaulting rule
-  (`@SaldoWn` for aktywa/aktywa-pasywa in a Bilans, `@ObrotyWn` for koszty in
-  an RZiS — [`02`](02-optima-data-model.md) §2.5).
-- **Tie-out** — Σ Aktywa − Σ Pasywa; Σ(positions) vs Σ(accounts); and the
-  residual, decomposed by cause.
+Expands every mask and range against the actual chart of accounts, builds the account → position coverage matrix, reports:
 
-Output: findings ranked by PLN, each with UI-step remediation and a `SELECT`
-snippet to verify ([`03`](03-architecture.md) §3.6).
+- **Uncovered accounts** — non-zero balance, zero positions reference it. Most common cause of a balance sheet that doesn't balance. Each with amount at stake and a suggested target position.
+- **Double-counted** — >1 position, same sign, same subtree.
+- **Dangling references** — masks and ranges matching nothing.
+- **Function/type mismatches** — against Optima's own defaulting rule ([`02`](02-optima-data-model.md) §2.5).
+- **Tie-out** — Σ Aktywa − Σ Pasywa; Σ(positions) vs Σ(accounts); residual decomposed by cause.
 
-### `optima_statement_adapt`
-`profile`, `period`, `statement`, `target_period?` → *dostosowywanie zestawień
-do planu kont.*
+Ranked by PLN, each with UI-step remediation and a `SELECT` snippet to verify.
 
-Takes the reconcile findings and produces an **ordered remediation plan**: for
-each uncovered account, the position it should belong to (inferred from account
-number, type, name similarity, and where its siblings already sit), expressed
-either as a narrower mask change or an explicit addition — with the impact of
-each change on the statement's totals stated before the user makes it.
+**`optima_statement_adapt`** · `profile`, `period`, `statement`, `target_period?`
 
-Also runs in "port a definition from period A to period B" mode, which is the
-common request when a new accounting year opens.
+*Dostosowywanie zestawień do planu kont.* Turns reconcile findings into an ordered remediation plan: for each uncovered account, the position it belongs in (inferred from number, type, name similarity, and where its siblings already sit), as either a narrower mask change or an explicit addition — with the effect on statement totals stated before the user makes the change.
 
----
+Also runs in "port a definition from period A to B" mode, the common request when a new accounting year opens.
 
 ## Balances
 
-### `optima_account_balances`
-`profile`, `period`, `account_mask?`, `date_from?`, `date_to?`,
-`include_buffer?` → obroty i salda.
+**`optima_account_balances`** · `profile`, `period`, `account_mask?`, `date_from?`, `date_to?`, `include_buffer?`
 
-Computed from `CDN.Dekrety` rather than trusting any cached aggregate
-([`02`](02-optima-data-model.md) §2.4). **`include_buffer` defaults to `false`
-and the choice is always stated in the output** — silently mixing provisional
-buffer entries (`DeN_Bufor`) into a reported balance produces numbers that look
-right and are wrong, which is worse than an error.
+Obroty i salda, computed from `CDN.Dekrety` rather than trusting a cached aggregate ([`02`](02-optima-data-model.md) §2.4). `include_buffer` defaults to `false` and the choice is always stated in the output — silently mixing provisional buffer entries (`DeN_Bufor`) into a reported balance gives numbers that look right and are wrong.
 
----
+## Not in v1
 
-## Deliberately *not* in v1
-
-- Anything that writes. Ever. ([`01`](01-integration-landscape.md) §1.2)
-- A generic `run_sql` tool. It looks attractive and it is a trap: it makes the
-  model responsible for schema correctness on an undocumented, drifting schema
-  ([`02`](02-optima-data-model.md) §2.6), it defeats the PII deny-list, and it
-  produces confidently wrong numbers. If a raw-query escape hatch is needed
-  later, it should be `SELECT`-only, gated behind explicit opt-in, and should
-  route through the same statement gate — but the whole thesis of this design
-  is that *curated domain tools beat raw SQL access* for a schema nobody has
-  documented.
-- Trade documents, payroll, CRM, warehouse. Later phases, after the accounting
-  wedge proves the architecture.
-- Multi-company consolidation. Wants its own design pass.
+- **Anything that writes.** ([`01`](01-integration-landscape.md))
+- **A generic `run_sql` tool.** Looks attractive, is a trap: makes the model responsible for schema correctness on an undocumented drifting schema ([`02`](02-optima-data-model.md) §2.6), defeats the PII deny-list, produces confidently wrong numbers. If a raw-query escape hatch is needed later it should be `SELECT`-only, explicitly opt-in, and routed through the same statement gate. The thesis of this design is that curated domain tools beat raw SQL on a schema nobody has documented.
+- Trade documents, payroll, CRM, warehouse. Later phases.
+- Multi-company consolidation. Needs its own design pass.

@@ -1,43 +1,27 @@
-# Research & technical discovery — optima-mcp
+# Research — optima-mcp
 
-High-level research for an **MCP server exposing Comarch ERP Optima data to any
-AI agent**, read-only, accounting-first.
+MCP server exposing Comarch ERP Optima data to any AI agent. Read-only, accounting-first.
 
-Conducted 2026-08. Every claim carries a confidence label; anything marked
-**[unverified]** is a working hypothesis that must be validated against a real
-installation before code depends on it.
+Research date 2026-08. Claims carry confidence labels; **[unverified]** items must be checked against a real install before code depends on them.
 
 | Doc | Contents |
 |---|---|
-| [01 — Integration landscape & feasibility](01-integration-landscape.md) | Why Optima has no usable API and direct read-only SQL is the only viable substrate; the support/warranty posture and the RODO/GDPR constraint that shape the whole architecture; feasibility verdict |
-| [02 — Optima data model](02-optima-data-model.md) | Database topology, period scoping, naming conventions, accounting table seed map, the *zestawienia księgowe* formula language, the undocumented-schema problem and the introspect-first answer, backup ingestion |
-| [03 — Proposed architecture](03-architecture.md) | Layered design, vendor neutrality, stack recommendation, connection model, five-layer read-only enforcement, output contract, context economy |
-| [04 — Tool surface (v1)](04-tool-surface.md) | Nine proposed tools, with the statement-reconciliation flagship; and what is deliberately excluded |
-| [05 — Roadmap & open questions](05-roadmap-and-open-questions.md) | Phasing, the four blocking spikes, risk register, decisions needed from the project owner |
+| [01 — Integration options](01-integration-landscape.md) | Available access paths and why direct read-only SQL is the only viable one; support posture; personal-data constraint; feasibility |
+| [02 — Optima data model](02-optima-data-model.md) | Topology, period scoping, naming conventions, accounting table seed map, zestawienia formula language, the undocumented-schema problem, backup ingestion |
+| [03 — Architecture](03-architecture.md) | Layers, vendor neutrality, TypeScript stack, decimal hazard, connection model, read-only enforcement, output contract, context economy |
+| [04 — Tool surface](04-tool-surface.md) | Nine v1 tools; what's excluded and why |
+| [05 — Roadmap](05-roadmap-and-open-questions.md) | Four blocking spikes, phases, risks, decisions needed |
 
-## The short version
+## Summary
 
-**Feasible.** Optima ships no public REST API by deliberate policy, but it does
-ship its own SQL console — Comarch already expects power users to read the
-database directly. Read-only SQL is therefore the only licence-free,
-vendor-neutral, agent-friendly access path, and it is a sanctioned one.
+**Feasible.** Optima ships no public REST API by policy, but does ship its own admin SQL console — Comarch already expects power users to read the DB directly. Direct read-only SQL is the only licence-free, vendor-neutral path.
 
-**The hard part is not MCP — it's the schema.** Optima's database is
-undocumented and drifts across releases. The architecture must **introspect the
-connected database at runtime and resolve a curated, versioned knowledge pack
-against it**, never hardcode a column name. That knowledge pack, not the
-protocol plumbing, is the real intellectual property of this project.
+**The hard part is the schema, not MCP.** Optima's DB is undocumented and drifts across releases; research couldn't even settle the column prefix on `CDN.Konta`, and the zestawienia table names are unknown. So: introspect the connected DB at runtime and resolve a curated, versioned knowledge pack against it. Never hardcode. That knowledge pack is the IP; the protocol plumbing is a weekend.
 
-**The accounting wedge is the right v1** — the data is aggregate and low-PII,
-it is small enough to reason about, and it is read-only by nature.
+**Accounting is the right v1** — aggregate, low-PII, small enough to reason about, read-only by nature.
 
-**The flagship tool is statement reconciliation.** Expand every mask in every
-*zestawienie księgowe* position against the actual chart of accounts, build the
-coverage matrix, and surface uncovered accounts, double-counting, dangling
-references and function/type mismatches — ranked by PLN impact. This diagnoses
-"bilans się nie bilansuje" in seconds, a problem currently solved by hand,
-position by position.
+**Flagship is statement reconciliation.** Expand every mask in every zestawienie position against the actual chart of accounts, build the coverage matrix, surface uncovered accounts, double-counting, dangling references and function/type mismatches, ranked by PLN. Diagnoses "bilans się nie bilansuje" in seconds — currently done by hand, position by position.
 
-**Four spikes block detailed design** (see [05](05-roadmap-and-open-questions.md)
-§5.1) and all four need the same thing: **access to one real Optima database
-with Księga Handlowa data.** That access is the project's critical path.
+**Stack:** TypeScript on Node 24, `@modelcontextprotocol/sdk`, `mssql`/Tedious (pure JS, no native deps), `decimal.js` for money, built-in `node:sqlite` for cache. `npx optima-mcp` with zero system prerequisites.
+
+**Four spikes block detailed design** ([05](05-roadmap-and-open-questions.md) §5.1), all needing the same thing: access to one real Optima DB with Księga Handlowa data. That's the critical path.
