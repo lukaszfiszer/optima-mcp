@@ -3,15 +3,18 @@
 Rules applied throughout:
 
 - `readOnlyHint: true`, `openWorldHint: false` on every tool.
-- Every accounting tool takes `profile` and `period`, and states which period it used ([`02`](02-optima-data-model.md) §2.2).
+- **No connect tool and no restore tool.** The data source — live connection or restored backup — is fixed at server startup from CLI arguments ([`03`](03-architecture.md) §3.6). `profile` is optional and defaults to the single configured source; it only matters when several are configured (biuro rachunkowe, [`05`](05-roadmap-and-open-questions.md) §5.4 Q2).
+- Every accounting tool takes `period` and states which one it used ([`02`](02-optima-data-model.md) §2.2).
 - Findings documents, not table dumps ([`03`](03-architecture.md) §3.7, §3.8).
 - Nine tools, not thirty. Models choose well from a short, clearly differentiated menu.
 
 ## Discovery
 
-**`optima_describe_environment`** · `profile`
+**`optima_describe_environment`** · `profile?`
 
-Optima version and schema fingerprint; company DBs visible; accounting periods with date ranges and open/closed status; which knowledge-pack concepts resolved against this schema and which didn't; whether the login is appropriately read-only.
+Where the data came from (live connection or restored backup, with the backup's filename and date); Optima version and schema fingerprint; company DBs visible; accounting periods with date ranges and open/closed status; which knowledge-pack concepts resolved against this schema and which didn't; whether the login is appropriately read-only.
+
+Stating the source matters: analysing a three-month-old backup and reporting it as current is a plausible and expensive mistake.
 
 Tells the agent up front what will and won't work, instead of letting it find out through failures.
 

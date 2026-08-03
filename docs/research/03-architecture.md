@@ -24,16 +24,29 @@ MCP client (Claude, ChatGPT, Cursor, Continue, custom agent)
 
 Each layer is independently testable. Safety lives in the gateway, version drift in the catalog, Optima knowledge in the semantic layer, and the tool layer stays thin.
 
-## 3.2 Vendor neutrality
+## 3.2 Deployment: local first
+
+**Decided:** v1 is **local desktop only** — the server runs on the user's machine next to their MCP client (Claude Desktop, Claude Code, Cursor, Continue), speaking stdio.
+
+Consequences, all of them simplifying:
+
+- **The DB credential never leaves the machine.** No TLS termination, no auth layer, no multi-tenancy, no secret storage service.
+- **We are not a data processor.** No DPA, no data-residency question, no shared-infrastructure risk on a database full of payroll data ([`01`](01-integration-landscape.md)). This is the single largest reason to start local.
+- The SQL Server is reachable directly — either the user's existing Optima instance, or a local one holding a restored backup ([`02`](02-optima-data-model.md) §2.7.1).
+- Audit log is a local file, which is what an auditor wants anyway.
+
+Streamable HTTP stays in the design (§3.3) because the SDK gives it for free and the tool layer is transport-agnostic, but **hosted deployment is out of scope for v1** and must not drive any v1 decision. Revisit once the tool surface has proven itself.
+
+## 3.3 Vendor neutrality
 
 - Plain MCP, no client-specific extensions. Target spec revision 2025-06-18 minimum; verify the current revision at build time and negotiate down rather than requiring the newest.
-- **Both transports.** stdio for desktop clients, streamable HTTP for hosted agents and ChatGPT-style connectors. Same tool surface, transport chosen by config.
+- **stdio is the v1 transport.** Streamable HTTP is implemented but unsupported/undocumented until hosted deployment is on the table. Same tool surface either way.
 - **No sampling or elicitation in the core path.** Optional protocol features with uneven client support; a tool that requires them breaks on half the ecosystem. Optional UX only, with a working fallback.
-- `readOnlyHint: true`, `openWorldHint: false` on every tool. These are trust hints, not enforcement — enforcement is §3.5 — but they let clients present the server honestly.
+- `readOnlyHint: true`, `openWorldHint: false` on every tool. These are trust hints, not enforcement — enforcement is §3.7 — but they let clients present the server honestly.
 - Output is text/Markdown. Attach structured content where supported, but the primary payload must be readable without a schema the model has to be taught.
 - Neutral tool descriptions, no vendor names.
 
-## 3.3 Stack — TypeScript / Node
+## 3.4 Stack — TypeScript / Node
 
 | Concern | Choice | Notes |
 |---|---|---|
@@ -41,7 +54,7 @@ Each layer is independently testable. Safety lives in the gateway, version drift
 | MCP | **`@modelcontextprotocol/sdk`** | Official TS SDK. Handles both transports, tool annotations, lifecycle. Don't hand-roll the protocol. |
 | Tool schemas | **`zod`** | Already an SDK dependency; JSON Schema is generated from it. |
 | DB driver | **`mssql`** (node-mssql, Tedious driver) | Pure JS — no ODBC system driver, no native build. Meaningful advantage over the Python path: `npx optima-mcp` works with zero system prerequisites. Supports SQL auth, Entra ID, encryption, pooling, per-request timeouts and cancellation. |
-| Decimal handling | **`decimal.js`** + cast in SQL | See §3.4. Non-negotiable. |
+| Decimal handling | **`decimal.js`** + cast in SQL | See §3.5. Non-negotiable. |
 | SQL parsing | **`node-sql-parser`** (`transactsql` dialect) | Used to *prove* a statement is read-only rather than regex-guessing. Belt-and-braces: we generate all SQL ourselves from resolved identifiers anyway. |
 | Local cache | **`node:sqlite`** (built-in) | Schema catalog, resolved knowledge pack, chart-of-accounts snapshots, keyed by schema fingerprint. `better-sqlite3` is the fallback if we need a Node 22 baseline, at the cost of a native build. |
 | Knowledge pack | **`yaml`** | Diffable, reviewable by accounting people who don't write TS. |
@@ -49,34 +62,53 @@ Each layer is independently testable. Safety lives in the gateway, version drift
 | Build / dist | **`tsup`/esbuild** → single bundled ESM CLI | Install friction kills MCP server adoption. `npx optima-mcp` must just work. Docker image as the second option. |
 | Package manager | `pnpm` | |
 
-## 3.4 JS-specific hazard: decimals
+## 3.5 JS-specific hazard: decimals
 
 JS `Number` is float64. Tedious returns SQL `DECIMAL`/`NUMERIC`/`MONEY` as `Number`, which silently loses exactness. For accounting output that is a correctness bug, not a rounding nit.
 
 Rules:
 
-1. **Aggregate in SQL, not in JS.** `SUM()` server-side; bring across totals, not rows to add up. This is also the right call for context economy (§3.7).
+1. **Aggregate in SQL, not in JS.** `SUM()` server-side; bring across totals, not rows to add up. This is also the right call for context economy (§3.9).
 2. **Cast on the way out**: `CAST(SUM(x) AS VARCHAR(40))`, parse into `decimal.js`. Never let a monetary value transit as a JS `Number`.
 3. All arithmetic in the analysis engine (materiality ranking, tie-out residuals, Σ Aktywa − Σ Pasywa) uses `Decimal`.
 4. Format once, at output, with explicit scale.
 
 Worth a lint rule and a test that fails on any `number`-typed monetary field.
 
-## 3.5 Connection model
+## 3.6 Connection model and startup
+
+Two ways in, both resolved **before** the server starts serving MCP. There is no connect tool and no restore tool — the data source is fixed for the process lifetime.
+
+```
+# A. live connection to an existing Optima database
+npx optima-mcp --profile biuro-klient-abc
+
+# B. restore a backup once, then serve from it   ([`02`] §2.7)
+npx optima-mcp --backup ./CDN_ABC.bac
+npx optima-mcp --backup ./CDN_ABC.bac --sql-server "localhost\OPTIMA"
+
+# helpers
+npx optima-mcp restore ./CDN_ABC.bac    # prewarm: do the slow restore in a terminal
+npx optima-mcp clean                    # drop restored DBs and delete files
+```
+
+Profile shape:
 
 ```
 profile:
   name        "biuro-klient-abc"
   server      host,port | named instance
-  auth        SQL login (read-only) | Windows/Kerberos | Entra ID
+  auth        SQL login (read-only) | Windows/Kerberos
   company_db  CDN_ABC
   config_db   CDN_KNF_Konfiguracja      (optional)
   encrypt     true (default; trustServerCertificate opt-in for on-prem)
 ```
 
-Profiles are configured out of band — env vars, config file, or secrets manager — and referenced by name. **Connection strings never enter the model context.** An agent passes `profile="biuro-klient-abc"`, not a host and password. The model can't leak a credential it never sees.
+Profiles are configured out of band — env vars or a local config file — and referenced by name. **Connection strings never enter the model context.** Tools take `profile="biuro-klient-abc"`, never a host and password. The model can't leak a credential it never sees.
 
-## 3.6 Read-only enforcement
+**Startup failures are loud and terminal.** Unreachable server, wrong collation, over-privileged login, backup that won't restore, engine too old for the backup — all fail at launch with a specific message on stderr, not as a tool error three turns into a conversation.
+
+## 3.7 Read-only enforcement
 
 Five layers, none trusted alone:
 
@@ -88,7 +120,7 @@ Five layers, none trusted alone:
 
 Plus a **PII deny-list** from Comarch's personal-data inventory, applied at the gateway. Denied by default; explicit per-profile opt-in, results pass through redaction.
 
-## 3.7 Output contract
+## 3.8 Output contract
 
 Every tool returns a findings document, not a data dump:
 
@@ -109,7 +141,7 @@ Remediation comes in two forms:
 
 **Language:** findings use Polish domain terms (plan kont, obroty, salda, zestawienie, gałąź, bufor) regardless of conversation language — those are the words on the screen the user is looking at. Surrounding prose follows the user's language.
 
-## 3.8 Context economy
+## 3.9 Context economy
 
 A real chart of accounts runs to thousands of accounts; `CDN.Dekrety` to millions of rows.
 

@@ -25,6 +25,15 @@ Księgowość kontowa:
 
 More domains later.
 
+## Usage (planned)
+
+Runs locally, next to your MCP client, over stdio. Point it at a live Optima database or at a backup file:
+
+```
+npx optima-mcp --profile biuro-klient-abc     # existing database
+npx optima-mcp --backup ./CDN_ABC.bac         # restore once at startup, then serve
+```
+
 ## Stack
 
 TypeScript / Node 24, `@modelcontextprotocol/sdk`, `mssql` (Tedious). No native dependencies — `npx optima-mcp`.

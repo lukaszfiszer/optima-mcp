@@ -8,7 +8,7 @@ Research date 2026-08. Claims carry confidence labels; **[unverified]** items mu
 |---|---|
 | [01 — Integration options](01-integration-landscape.md) | Available access paths and why direct read-only SQL is the only viable one; support posture; personal-data constraint; feasibility |
 | [02 — Optima data model](02-optima-data-model.md) | Topology, period scoping, naming conventions, accounting table seed map, zestawienia formula language, the undocumented-schema problem, backup ingestion |
-| [03 — Architecture](03-architecture.md) | Layers, vendor neutrality, TypeScript stack, decimal hazard, connection model, read-only enforcement, output contract, context economy |
+| [03 — Architecture](03-architecture.md) | Layers, local-first deployment, TypeScript stack, decimal hazard, CLI and startup, read-only enforcement, output contract, context economy |
 | [04 — Tool surface](04-tool-surface.md) | Nine v1 tools; what's excluded and why |
 | [05 — Roadmap](05-roadmap-and-open-questions.md) | Four blocking spikes, phases, risks, decisions needed |
 
@@ -23,5 +23,14 @@ Research date 2026-08. Claims carry confidence labels; **[unverified]** items mu
 **Flagship is statement reconciliation.** Expand every mask in every zestawienie position against the actual chart of accounts, build the coverage matrix, surface uncovered accounts, double-counting, dangling references and function/type mismatches, ranked by PLN. Diagnoses "bilans się nie bilansuje" in seconds — currently done by hand, position by position.
 
 **Stack:** TypeScript on Node 24, `@modelcontextprotocol/sdk`, `mssql`/Tedious (pure JS, no native deps), `decimal.js` for money, built-in `node:sqlite` for cache. `npx optima-mcp` with zero system prerequisites.
+
+**Local desktop, stdio.** Credential never leaves the machine; we never become a data processor for a DB full of payroll. Data source is fixed at startup — either a live connection or a backup restored once at launch:
+
+```
+npx optima-mcp --profile biuro-klient-abc
+npx optima-mcp --backup ./CDN_ABC.bac
+```
+
+No open-source engine can restore a `.bak` (Babelfish is protocol-compatible, not storage-compatible; OrcaMDF is abandoned). Restore target defaults to the SQL Server the user already runs Optima on; free fallback is Express 2025, whose database cap rose from 10 GB to 50 GB.
 
 **Four spikes block detailed design** ([05](05-roadmap-and-open-questions.md) §5.1), all needing the same thing: access to one real Optima DB with Księga Handlowa data. That's the critical path.
