@@ -118,7 +118,7 @@ The **knowledge pack** — versioned YAML mapping domain concepts to physical ta
 
 ## 2.7 Backup ingestion
 
-**Decided:** ingestion is a **one-time setup step at server startup**, not a tool. The user passes the backup path to the `npx` command; the server restores before it starts serving MCP. No async job model, no polling tool, no restore tool in the surface ([`04`](04-tool-surface.md)).
+**Decided:** ingestion is a **one-time setup step at server startup**, not a tool. The user passes the backup path to the `npx` command; the server restores before it starts serving MCP. No async job model, no polling tool, no restore tool in the surface ([`04`](04-tool-surface.md)). Setup UX, entry points and the full state machine are in [`06`](06-backup-ingestion-setup.md).
 
 ```
 npx optima-mcp --backup ./CDN_ABC.bac

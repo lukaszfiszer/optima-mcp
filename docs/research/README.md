@@ -11,6 +11,7 @@ Research date 2026-08. Claims carry confidence labels; **[unverified]** items mu
 | [03 — Architecture](03-architecture.md) | Layers, local-first deployment, TypeScript stack, decimal hazard, CLI and startup, read-only enforcement, output contract, context economy |
 | [04 — Tool surface](04-tool-surface.md) | Nine v1 tools; what's excluded and why |
 | [05 — Roadmap](05-roadmap-and-open-questions.md) | Four blocking spikes, phases, risks, decisions needed |
+| [06 — Backup ingestion setup](06-backup-ingestion-setup.md) | Why the auth-page idea doesn't work, the four entry points, startup state machine, on-disk state, failure messages |
 
 ## Summary
 

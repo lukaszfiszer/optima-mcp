@@ -22,7 +22,7 @@ Also worth an hour: pin down the mask wildcard alphabet empirically (`*`, `?`, r
 | **1 — Skeleton** | MCP server (stdio + streamable HTTP), connection profiles, SQL gateway with all five enforcement layers, introspection + fingerprint + SQLite cache, `optima_describe_environment`. Read-only login script, `npx` install. | A user points Claude or ChatGPT at their Optima DB and gets an honest capability report. |
 | **2 — Chart of accounts** | Knowledge pack v1, mask expansion engine, `_overview` / `_analyze` / `_diff`, `optima_account_balances`. | Real *analiza planu kont*. |
 | **3 — Statements** | Definition parser, coverage matrix, `_list` / `_definition` / `_reconcile` / `_adapt`. | Diagnose a balance sheet that doesn't balance and say how to fix it. |
-| **4 — Backup ingestion** | Startup restore path, `.bac` unwrap, fingerprint-and-skip cache, `restore` prewarm and `clean` commands, Express 2025 fallback engine. | `npx optima-mcp --backup ./x.bac` works ([`02`](02-optima-data-model.md) §2.7). |
+| **4 — Backup ingestion** | Startup state machine with preflight, `.bac` unwrap, fingerprint-and-skip cache, `setup` wizard, `restore` / `clean` commands, MCPB bundle with native file picker, Express 2025 fallback engine. | `npx optima-mcp --backup ./x.bac` works, and a non-technical user can do it without editing JSON ([`06`](06-backup-ingestion-setup.md)). |
 | **5 — Hardening** | Multi-version knowledge-pack coverage, anonymised schema-report contribution flow, more rules, adjacent domains. | |
 
 Phase 1 doesn't depend on any spike and can be built in parallel with securing DB access.
