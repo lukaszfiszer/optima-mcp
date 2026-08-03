@@ -114,7 +114,7 @@ The **knowledge pack** — versioned YAML mapping domain concepts to physical ta
 
 - **Graceful degradation:** on an unrecognised schema, report which concepts resolved and which didn't, offer the tools that still work. Never fabricate a column name.
 - **Contributable:** a schema-report command emitting an anonymised introspection dump (names and types, no data) is how the pack covers versions we don't have access to.
-- Every generated `SELECT` is built from resolved identifiers, never from a model-produced string ([`03`](03-architecture.md) §3.5).
+- Every generated `SELECT` is built from resolved identifiers, never from a model-produced string ([`03`](03-architecture.md) §3.7).
 
 ## 2.7 Backup ingestion
 

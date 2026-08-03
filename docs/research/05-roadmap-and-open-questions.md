@@ -20,9 +20,9 @@ Also worth an hour: pin down the mask wildcard alphabet empirically (`*`, `?`, r
 | Phase | Contents | Done when |
 |---|---|---|
 | **1 — Skeleton** | MCP server (stdio + streamable HTTP), connection profiles, SQL gateway with all five enforcement layers, introspection + fingerprint + SQLite cache, `optima_describe_environment`. Read-only login script, `npx` install. | A user points Claude or ChatGPT at their Optima DB and gets an honest capability report. |
-| **2 — Chart of accounts** | Knowledge pack v1, mask expansion engine, `_overview` / `_analyze` / `_diff`, `optima_account_balances`. | Real *analiza planu kont*. |
-| **3 — Statements** | Definition parser, coverage matrix, `_list` / `_definition` / `_reconcile` / `_adapt`. | Diagnose a balance sheet that doesn't balance and say how to fix it. |
-| **4 — Backup ingestion** | Startup state machine with preflight, `.bac` unwrap, fingerprint-and-skip cache, `setup` wizard, `restore` / `clean` commands, MCPB bundle with native file picker, Express 2025 fallback engine. | `npx optima-mcp --backup ./x.bac` works, and a non-technical user can do it without editing JSON ([`06`](06-backup-ingestion-setup.md)). |
+| **2 — Chart of accounts** | Knowledge pack v1, mask expansion engine, accounting tools — each specified individually first ([`04`](04-tool-surface.md)). | Real *analiza planu kont*. |
+| **3 — Statements** | Definition parser, coverage matrix, statement tools — each specified individually first. | Diagnose a balance sheet that doesn't balance and say how to fix it. |
+| **4 — Backup ingestion** | Startup state machine with preflight, `.bac` unwrap, fingerprint-and-skip cache, `restore` / `clean` subcommands, Express 2025 fallback engine. | `npx optima-mcp --backup ./x.bac` works ([`06`](06-backup-ingestion-setup.md)). |
 | **5 — Hardening** | Multi-version knowledge-pack coverage, anonymised schema-report contribution flow, more rules, adjacent domains. | |
 
 Phase 1 doesn't depend on any spike and can be built in parallel with securing DB access.
@@ -34,7 +34,7 @@ Phase 1 doesn't depend on any spike and can be built in parallel with securing D
 | No access to a real Optima DB | Blocks everything | Top priority. Everything else is speculative until it lands. |
 | Schema drift across releases | Silent wrong answers — worst failure mode for accounting software | Introspect-and-resolve, never hardcode ([`02`](02-optima-data-model.md) §2.6). Refuse checks whose concepts didn't resolve, and say so. |
 | Definitions stored opaquely | Guts the flagship | Spike S2 first. Fallback: reconcile from the account↔position link (S3) alone — still catches uncovered and double-counted accounts without parsing formulas. |
-| Confidently wrong numbers | An accountant files a bad statement | Deterministic computation in TS, decimal arithmetic ([`03`](03-architecture.md) §3.4), always state period / buffer inclusion / assumptions, always emit a verification `SELECT`. Position output as diagnosis to review, not a filed figure. |
+| Confidently wrong numbers | An accountant files a bad statement | Deterministic computation in TS, decimal arithmetic ([`03`](03-architecture.md) §3.5), always state period / buffer inclusion / assumptions, always emit a verification `SELECT`. Position output as diagnosis to review, not a filed figure. |
 | PII into the LLM context | RODO/GDPR exposure | Deny-list from Comarch's own personal-data doc, aggregate by default, redaction, explicit opt-in. |
 | Performance hit on a live production DB | Uninstalled during month-end close | NOLOCK/snapshot discipline, timeouts, row caps, concurrency limit, off-peak guidance in docs. |
 | Customer's Comarch partner objects on support grounds | Adoption blocker | Read-only login, audit log, clear docs that we only `SELECT`. Make the read-only posture a selling point, not a footnote. |
@@ -47,7 +47,7 @@ Phase 1 doesn't depend on any spike and can be built in parallel with securing D
 
 ## 5.4 Open questions
 
-1. **Write-SQL generation.** I narrowed the brief's "SQL snippet user will execute" to `SELECT`-only, with changes as Optima UI steps ([`03`](03-architecture.md) §3.7). Confirm, or tell me to design a gated write-SQL mode.
+1. **Write-SQL generation.** I narrowed the brief's "SQL snippet user will execute" to `SELECT`-only, with changes as Optima UI steps ([`03`](03-architecture.md) §3.8). Confirm, or tell me to design a gated write-SQL mode.
 2. **Who is the user?** One accounting office on one company DB, or a biuro rachunkowe with dozens of client DBs? The latter makes profile management, multi-company tooling and cross-client benchmarking first-class.
 3. **Output language.** I assumed Polish domain terms inside whatever language the user converses in. Confirm.
 4. **Optima version floor.** Back to 2019, or current releases only? Materially changes knowledge-pack effort. What do target customers actually run?

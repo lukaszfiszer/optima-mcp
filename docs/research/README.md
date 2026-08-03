@@ -9,9 +9,9 @@ Research date 2026-08. Claims carry confidence labels; **[unverified]** items mu
 | [01 — Integration options](01-integration-landscape.md) | Available access paths and why direct read-only SQL is the only viable one; support posture; personal-data constraint; feasibility |
 | [02 — Optima data model](02-optima-data-model.md) | Topology, period scoping, naming conventions, accounting table seed map, zestawienia formula language, the undocumented-schema problem, backup ingestion |
 | [03 — Architecture](03-architecture.md) | Layers, local-first deployment, TypeScript stack, decimal hazard, CLI and startup, read-only enforcement, output contract, context economy |
-| [04 — Tool surface](04-tool-surface.md) | Nine v1 tools; what's excluded and why |
+| [04 — Tool surface](04-tool-surface.md) | The one v1 tool (database introspection); rules for the rest; what's excluded by design |
 | [05 — Roadmap](05-roadmap-and-open-questions.md) | Four blocking spikes, phases, risks, decisions needed |
-| [06 — Backup ingestion setup](06-backup-ingestion-setup.md) | Why the auth-page idea doesn't work, the four entry points, startup state machine, on-disk state, failure messages |
+| [06 — Backup ingestion setup](06-backup-ingestion-setup.md) | Why the auth-page idea doesn't work, the CLI entry point, startup state machine, on-disk state, failure messages |
 
 ## Summary
 
@@ -21,7 +21,9 @@ Research date 2026-08. Claims carry confidence labels; **[unverified]** items mu
 
 **Accounting is the right v1** — aggregate, low-PII, small enough to reason about, read-only by nature.
 
-**Flagship is statement reconciliation.** Expand every mask in every zestawienie position against the actual chart of accounts, build the coverage matrix, surface uncovered accounts, double-counting, dangling references and function/type mismatches, ranked by PLN. Diagnoses "bilans się nie bilansuje" in seconds — currently done by hand, position by position.
+**Flagship capability is statement reconciliation** ([02](02-optima-data-model.md) §2.5): expand every mask in every zestawienie position against the actual chart of accounts, build the coverage matrix, surface uncovered accounts, double-counting, dangling references and function/type mismatches, ranked by PLN. Diagnoses "bilans się nie bilansuje" in seconds — currently done by hand, position by position. Not yet specified as a tool: the schema it depends on is unknown until the spikes run.
+
+**Tool surface is one tool for now** — database introspection ([04](04-tool-surface.md)). The accounting tools get specified individually, each immediately before it's built.
 
 **Stack:** TypeScript on Node 24, `@modelcontextprotocol/sdk`, `mssql`/Tedious (pure JS, no native deps), `decimal.js` for money, built-in `node:sqlite` for cache. `npx optima-mcp` with zero system prerequisites.
 

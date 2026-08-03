@@ -13,90 +13,32 @@ How the user gets a backup file into the server ([`02`](02-optima-data-model.md)
 3. **A browser can't give us a local path.** This is the part that kills the idea even in a non-OAuth form. Drag-drop and `<input type=file>` give a `File` object with no absolute path — browsers deliberately withhold it, and the File System Access API gives a handle, not a path. So a web page can't say "ingest the file at `D:\Kopie\CDN_ABC.bac`"; it can only *stream the bytes*.
 4. **Streaming the bytes is absurd here.** Real Optima backups run to tens of GB and the file is *already on the same disk as the server*. Uploading it to localhost means reading 20 GB and writing a second 20 GB copy, doubling disk use and adding minutes, to end up with a file we could have opened directly.
 
-**The instinct is right, though.** Editing `claude_desktop_config.json` by hand to add `--backup "D:\Kopie\CDN_ABC.bac"` is a bad ask for an accountant. We want a real file picker. We just need one that returns a *path* — which means native UI, not a web page.
+**The instinct is right, though.** Editing `claude_desktop_config.json` by hand to add `--backup "D:\Kopie\CDN_ABC.bac"` is a bad ask for an accountant. A real file picker is the right long-term answer — it just has to be a *native* one that returns a path, not a web page. Deferred, see §6.2.
 
 **Revisit when:** hosted HTTP deployment lands ([`05`](05-roadmap-and-open-questions.md) §5.4). Then OAuth is genuinely required — but even then the answer is "connect a live DB or push the backup to object storage", not a browser upload.
 
-## 6.2 Four entry points
+## 6.2 Entry point: CLI argument
 
-Layered, each degrading to the one below. Build L0 first; L1 is the one that delivers the UX the auth-page idea was reaching for.
-
-### L0 — CLI argument (baseline, always works)
+**Decided for v1: CLI argument only.**
 
 ```
 npx optima-mcp --backup ./CDN_ABC.bac
+npx optima-mcp restore ./CDN_ABC.bac    # prewarm: slow first restore, in a terminal
+npx optima-mcp clean                    # drop restored DBs and delete files
 ```
 
-Works in every MCP client, scriptable, testable. The marginal cost is small in context: **you cannot install an MCP server into a client without touching its config anyway**, so adding one argument to a block you're already pasting is not the burden it first appears. Everything else is built on this — L1–L3 all end up invoking it.
+Works in every MCP client, scriptable, testable. The marginal cost is smaller than it looks: **you cannot install an MCP server into a client without touching its config anyway**, so this is one argument in a block the user is already pasting.
 
-### L1 — MCPB bundle with a native file picker (best UX, narrow reach)
+`restore` and `clean` are plain subcommands over the same state machine (§6.3), not a wizard. `restore` exists because the first ingest of a large backup can outlast a client's startup timeout ([`02`](02-optima-data-model.md) §2.7) — running it once in a terminal moves that wait somewhere it does no harm.
 
-Ship an `.mcpb` bundle (formerly `.dxt`). The client installs it by double-click or drag into Settings, and renders a native settings UI from the manifest's `user_config`. **`user_config` supports a `file` type that opens a real OS file picker** and substitutes the chosen path into the server's `args`. **[confirmed — MCPB MANIFEST spec]**
+### Later, not now
 
-**Client support — check this before over-investing.** The format was donated to the MCP project in Nov 2025 (`modelcontextprotocol/mcpb`), so governance is no longer Anthropic-only and the stated goal is cross-client portability. Adoption has not followed:
+Two ways to get the native file picker §6.1 concluded we'd need. Both are packaging over this CLI, neither is v1, and neither should influence any v1 decision:
 
-| Client | `.mcpb` support |
-|---|---|
-| Claude Desktop | Yes, native — double-click or drag into Settings |
-| Claude Code | Yes |
-| MCP for Windows (Windows AI Foundry) | **Partial and gated.** A server can be registered from a bundle, but bundle-installed servers are excluded from the on-device agent registry and unavailable in agent sessions unless the user turns on "Reduce protections for agent connectors". **[confirmed — Microsoft Learn]** |
-| Cursor, VS Code + Copilot, Windsurf, LM Studio, Goose, Cherry Studio, Raycast, ChatGPT | No — JSON config or MCP URLs |
+- **MCPB bundle.** Native config UI with a real file picker. Reach is narrow — Claude Desktop and Claude Code, plus a gated implementation in MCP for Windows; Cursor, VS Code, Windsurf, LM Studio, Goose and ChatGPT don't support it.
+- **Electron desktop wrapper.** Client-agnostic, and can return real local paths.
 
-So in practice: **Claude, plus one hedged Microsoft implementation.** Nine months after the format moved to the MCP project, no third client has shipped it.
-
-**What that means for us.** The brief requires agent-agnosticism, so L1 cannot be the primary path — it's a packaging convenience layered over L0, worth building because it's a manifest and a CI step rather than an application, and because Claude Desktop is a plausible plurality of our users. **L2 is the client-agnostic answer** and should be treated as the main setup route. Build order (§6.6) reflects this: L2 before L1.
-
-```jsonc
-{
-  "user_config": {
-    "backup_file": {
-      "type": "file",
-      "title": "Plik kopii bezpieczeństwa Optima",
-      "description": "Wskaż plik .bac lub .bak z kopią bazy firmowej",
-      "required": false
-    },
-    "sql_server": {
-      "type": "string",
-      "title": "Serwer SQL",
-      "description": "Instancja, na której odtworzyć kopię. Zostaw puste, aby użyć serwera Optima.",
-      "default": "localhost\\OPTIMA",
-      "required": false
-    },
-    "sql_password": { "type": "string", "sensitive": true, "required": false }
-  },
-  "server": {
-    "mcp_config": {
-      "command": "node",
-      "args": ["${__dirname}/server/index.js",
-               "--backup", "${user_config.backup_file}",
-               "--sql-server", "${user_config.sql_server}"]
-    }
-  }
-}
-```
-
-This is exactly the "drop a backup file" UX, minus every problem in §6.1: native picker, real absolute path, no upload, no byte copying, no HTTP, no OAuth, stdio intact. `sensitive: true` fields go to OS-secure storage rather than process args, which also cleans up credential handling ([`03`](03-architecture.md) §3.6).
-
-### L2 — `npx optima-mcp setup` (client-agnostic wizard — the primary route)
-
-Interactive terminal setup. Works in every client, which given the L1 support table is most of them:
-
-- discover local SQL Server instances and Optima databases (`CDN_*`, `CDN_KNF_*`)
-- offer a live connection or ask for a backup path (with tab completion — a terminal *can* take a path)
-- create the read-only login, run the preflight (§6.3), do the restore with a progress bar
-- write the profile to `~/.optima-mcp/config.json` and print the exact client-config block to paste
-
-After setup the client config is just `npx optima-mcp` with no arguments. This doubles as the **prewarm** step ([`02`](02-optima-data-model.md) §2.7): the slow first restore happens here, in a terminal where minutes are fine, not inside a client with a startup timeout.
-
-### L3 — watched folder (zero config)
-
-If no source is configured, look in `~/.optima-mcp/backups/`. Exactly one backup → use it. Several → fail listing them. Docs reduce to "drop your `.bac` in this folder."
-
-Cheap to build, useful for the least technical users. Optional; skip if L1 and L2 land well.
-
-### Progressive enhancement — elicitation
-
-If no source is configured *and* the client advertises `elicitation`, ask for a path mid-session instead of failing. Strictly a bonus: support is uneven and it must never be the only route ([`03`](03-architecture.md) §3.3).
+Defer both until the tool surface has proven itself.
 
 ## 6.3 Startup state machine
 
@@ -105,8 +47,7 @@ resolveSource()
   --profile        → live connection
   --backup <path>  → ingest(path)
   config file      → whichever it names
-  watched folder   → exactly one file? ingest it
-  else             → fail with setup instructions (or elicit)
+  else             → fail with usage instructions
 
 ingest(path)
   fingerprint = hash(size, mtime, first+last 1 MiB)
@@ -133,7 +74,7 @@ Two details worth keeping:
 - **`SET READ_ONLY` on the restored database.** Free, engine-enforced immutability on top of the read-only login and the statement gate ([`03`](03-architecture.md) §3.7). On the backup path there is no reason for the database ever to be writable again, so make it structurally impossible.
 - **Preflight before the long operation.** Every one of those checks is seconds; the restore is minutes. Failing on collation after 8 minutes of restore is the difference between a tool that feels solid and one that feels broken.
 
-**Progress:** no MCP channel exists during startup, so write progress to stderr (clients surface it in logs). `RESTORE` percentage is readable from `sys.dm_exec_requests.percent_complete` on a second connection — use it for the `setup`/`restore` progress bar.
+**Progress:** no MCP channel exists during startup, so write progress to stderr (clients surface it in logs). `RESTORE` percentage is readable from `sys.dm_exec_requests.percent_complete` on a second connection — use it for the `restore` progress bar.
 
 ## 6.4 On-disk state
 
@@ -141,11 +82,10 @@ Two details worth keeping:
 ~/.optima-mcp/
   config.json         profiles, engine settings   (no secrets)
   state.db            node:sqlite — fingerprint → restored DB, schema cache
-  backups/            L3 watched folder
   audit/              query log ([`03`] §3.7)
 ```
 
-Secrets go to the OS keychain via MCPB `sensitive` fields, or env vars for L0/L2 — never `config.json`.
+Secrets come from env vars — never `config.json`.
 
 Restored databases are named `OPTIMAMCP_<fingerprint>` so `clean` is unambiguous and we never touch a database we didn't create. `clean` drops them and removes the data files. Persistence-by-default is a deliberate speed trade-off and gets a loud line in the README, because the artefact is a full copy of the customer's books ([`02`](02-optima-data-model.md) §2.7).
 
@@ -155,7 +95,7 @@ Startup failures are terminal and specific. Each says what to do:
 
 | Condition | Message |
 |---|---|
-| No source configured | "No Optima database configured. Run `npx optima-mcp setup`, or pass `--backup <plik.bac>` / `--profile <nazwa>`." |
+| No source configured | "No Optima database configured. Pass `--backup <plik.bac>` or `--profile <nazwa>`." |
 | Backup newer than engine | "Kopia pochodzi z SQL Server <X>; serwer docelowy to <Y>. SQL Server odtwarza tylko w przód — wskaż nowszą instancję przez `--sql-server`." |
 | Over Express's 50 GB cap | "Baza po odtworzeniu zajmie <N> GB, limit SQL Server Express to 50 GB. Wskaż instancję, na której działa Optima: `--sql-server`." |
 | Wrong collation | "Instancja ma collation <X>, Optima wymaga Polish_CI_AS." |
@@ -164,18 +104,13 @@ Startup failures are terminal and specific. Each says what to do:
 
 ## 6.6 Build order
 
-| | What | Phase |
-|---|---|---|
-| 1 | L0 CLI arg + state machine + fingerprint cache + `restore` / `clean` | 4 |
-| 2 | L2 `setup` wizard (also the prewarm path) | 4 |
-| 3 | L1 MCPB bundle | 4, once L0 is stable — a manifest and a CI step, not an application. Reach is Claude-only in practice (§6.2), so don't let it grow beyond that. |
-| 4 | L3 watched folder, elicitation | opportunistic |
+All of v1 is one item: the CLI argument, the state machine, the fingerprint cache, and the `restore` / `clean` subcommands — phase 4 ([`05`](05-roadmap-and-open-questions.md) §5.2).
+
+MCPB and the Electron wrapper are deferred and unscoped (§6.2).
 
 ## Sources
 
 - [Authorization — Model Context Protocol specification](https://modelcontextprotocol.io/specification/draft/basic/authorization)
-- [MCPB `MANIFEST.md` — `user_config` field types](https://github.com/modelcontextprotocol/mcpb/blob/main/MANIFEST.md)
-- [Adopting the MCP Bundle format (.mcpb) for portable local servers](https://blog.modelcontextprotocol.io/posts/2025-11-20-adopting-mcpb/) — names Claude Desktop, Claude Code and MCP for Windows as implementers
-- [Register an MCP server with an MCP bundle — Microsoft Learn](https://learn.microsoft.com/en-us/windows/ai/mcp/servers/mcp-mcpb) · [MCP servers on Windows overview](https://learn.microsoft.com/en-us/windows/ai/mcp/servers/mcp-server-overview)
-- [Desktop Extensions — Anthropic Engineering](https://www.anthropic.com/engineering/desktop-extensions)
+- [Adopting the MCP Bundle format (.mcpb) for portable local servers](https://blog.modelcontextprotocol.io/posts/2025-11-20-adopting-mcpb/) — names Claude Desktop, Claude Code and MCP for Windows as the implementers
+- [Register an MCP server with an MCP bundle — Microsoft Learn](https://learn.microsoft.com/en-us/windows/ai/mcp/servers/mcp-mcpb) — the Windows gating caveat
 - [Which AI tools actually support MCP well right now — MCP Bundles](https://www.mcpbundles.com/blog/state-of-mcp-clients)
