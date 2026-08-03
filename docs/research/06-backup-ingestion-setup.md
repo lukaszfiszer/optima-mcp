@@ -29,9 +29,22 @@ npx optima-mcp --backup ./CDN_ABC.bac
 
 Works in every MCP client, scriptable, testable. The marginal cost is small in context: **you cannot install an MCP server into a client without touching its config anyway**, so adding one argument to a block you're already pasting is not the burden it first appears. Everything else is built on this — L1–L3 all end up invoking it.
 
-### L1 — MCPB bundle with a native file picker (the answer)
+### L1 — MCPB bundle with a native file picker (best UX, narrow reach)
 
-Ship an `.mcpb` bundle (formerly `.dxt`). Claude Desktop installs it by double-click or drag into Settings, and renders a native settings UI from the manifest's `user_config`. **`user_config` supports a `file` type that opens a real OS file picker** and substitutes the chosen path into the server's `args`. **[confirmed — MCPB MANIFEST spec]**
+Ship an `.mcpb` bundle (formerly `.dxt`). The client installs it by double-click or drag into Settings, and renders a native settings UI from the manifest's `user_config`. **`user_config` supports a `file` type that opens a real OS file picker** and substitutes the chosen path into the server's `args`. **[confirmed — MCPB MANIFEST spec]**
+
+**Client support — check this before over-investing.** The format was donated to the MCP project in Nov 2025 (`modelcontextprotocol/mcpb`), so governance is no longer Anthropic-only and the stated goal is cross-client portability. Adoption has not followed:
+
+| Client | `.mcpb` support |
+|---|---|
+| Claude Desktop | Yes, native — double-click or drag into Settings |
+| Claude Code | Yes |
+| MCP for Windows (Windows AI Foundry) | **Partial and gated.** A server can be registered from a bundle, but bundle-installed servers are excluded from the on-device agent registry and unavailable in agent sessions unless the user turns on "Reduce protections for agent connectors". **[confirmed — Microsoft Learn]** |
+| Cursor, VS Code + Copilot, Windsurf, LM Studio, Goose, Cherry Studio, Raycast, ChatGPT | No — JSON config or MCP URLs |
+
+So in practice: **Claude, plus one hedged Microsoft implementation.** Nine months after the format moved to the MCP project, no third client has shipped it.
+
+**What that means for us.** The brief requires agent-agnosticism, so L1 cannot be the primary path — it's a packaging convenience layered over L0, worth building because it's a manifest and a CI step rather than an application, and because Claude Desktop is a plausible plurality of our users. **L2 is the client-agnostic answer** and should be treated as the main setup route. Build order (§6.6) reflects this: L2 before L1.
 
 ```jsonc
 {
@@ -64,11 +77,9 @@ Ship an `.mcpb` bundle (formerly `.dxt`). Claude Desktop installs it by double-c
 
 This is exactly the "drop a backup file" UX, minus every problem in §6.1: native picker, real absolute path, no upload, no byte copying, no HTTP, no OAuth, stdio intact. `sensitive: true` fields go to OS-secure storage rather than process args, which also cleans up credential handling ([`03`](03-architecture.md) §3.6).
 
-Anthropic-specific today, and that's acceptable — it's a packaging convenience layered over L0, not a dependency.
+### L2 — `npx optima-mcp setup` (client-agnostic wizard — the primary route)
 
-### L2 — `npx optima-mcp setup` (client-agnostic wizard)
-
-Interactive terminal setup for everyone not on Claude Desktop:
+Interactive terminal setup. Works in every client, which given the L1 support table is most of them:
 
 - discover local SQL Server instances and Optima databases (`CDN_*`, `CDN_KNF_*`)
 - offer a live connection or ask for a backup path (with tab completion — a terminal *can* take a path)
@@ -157,12 +168,14 @@ Startup failures are terminal and specific. Each says what to do:
 |---|---|---|
 | 1 | L0 CLI arg + state machine + fingerprint cache + `restore` / `clean` | 4 |
 | 2 | L2 `setup` wizard (also the prewarm path) | 4 |
-| 3 | L1 MCPB bundle | 4, once L0 is stable — it's a manifest over L0 |
+| 3 | L1 MCPB bundle | 4, once L0 is stable — a manifest and a CI step, not an application. Reach is Claude-only in practice (§6.2), so don't let it grow beyond that. |
 | 4 | L3 watched folder, elicitation | opportunistic |
 
 ## Sources
 
 - [Authorization — Model Context Protocol specification](https://modelcontextprotocol.io/specification/draft/basic/authorization)
-- [MCPB `MANIFEST.md` — `user_config` field types](https://raw.githubusercontent.com/anthropics/mcpb/main/MANIFEST.md)
-- [Adopting the MCP Bundle format (.mcpb) for portable local servers](https://blog.modelcontextprotocol.io/posts/2025-11-20-adopting-mcpb/)
+- [MCPB `MANIFEST.md` — `user_config` field types](https://github.com/modelcontextprotocol/mcpb/blob/main/MANIFEST.md)
+- [Adopting the MCP Bundle format (.mcpb) for portable local servers](https://blog.modelcontextprotocol.io/posts/2025-11-20-adopting-mcpb/) — names Claude Desktop, Claude Code and MCP for Windows as implementers
+- [Register an MCP server with an MCP bundle — Microsoft Learn](https://learn.microsoft.com/en-us/windows/ai/mcp/servers/mcp-mcpb) · [MCP servers on Windows overview](https://learn.microsoft.com/en-us/windows/ai/mcp/servers/mcp-server-overview)
 - [Desktop Extensions — Anthropic Engineering](https://www.anthropic.com/engineering/desktop-extensions)
+- [Which AI tools actually support MCP well right now — MCP Bundles](https://www.mcpbundles.com/blog/state-of-mcp-clients)
