@@ -13,9 +13,8 @@ flowchart TB
     end
 
     subgraph Core["optima-mcp core — shared, transport-agnostic"]
-        Service["Service layer\nfindings-doc assembly (SUMMARY / FINDINGS / NEXT STEPS / CAVEATS)"]
-        Analysis["Analysis engine\nmask expansion, coverage matrix,\nrule checks, materiality ranking"]
-        Domain["Domain layer\nknowledge pack (YAML) resolved\nagainst actual schema"]
+        Service["Service layer\nassembles normalized domain responses"]
+        Domain["Domain layer\nknowledge pack (YAML) resolved\nagainst actual schema — hides version differences"]
         Catalog["Schema catalog\nintrospection, fingerprint, cache"]
         Gateway["SQL gateway\nread-only enforcement, params,\ntimeouts, row caps, PII deny-list, audit log"]
     end
@@ -26,8 +25,7 @@ flowchart TB
     RESTClient -.->|"HTTP/JSON (future)"| RESTAdapter
     MCPAdapter --> Service
     RESTAdapter -.-> Service
-    Service --> Analysis
-    Analysis --> Domain
+    Service --> Domain
     Domain --> Catalog
     Catalog --> Gateway
     Gateway -->|"TDS, read-only login"| DB
@@ -35,7 +33,9 @@ flowchart TB
 
 Each layer is independently testable. Safety lives in the gateway, version drift in the catalog, Optima knowledge in the domain layer, and the protocol adapters stay thin.
 
-The **service layer** is the seam for the REST future stated in §3.2/§3.3: it holds the actual tool logic (calling the analysis engine, assembling the findings document) with no MCP types in it. An MCP tool handler and a future REST controller both call the same service functions and only differ in how they parse input and serialize output. Nothing here ships for v1 beyond writing the v1 MCP handlers as thin wrappers over service functions from the start, so there is no rewrite when REST is prioritized.
+The server is a **DB-access wrapper, not a diagnostic engine**: tools return normalized, domain-level data — the domain layer's job is translating an Optima-version-specific schema into a stable shape, not judging it. Ranking, rule-checking, and interpretation are the calling agent's job.
+
+The **service layer** is the seam for the REST future stated in §3.2/§3.3: it holds the actual tool logic (resolving domain entities via the domain layer, shaping the response) with no MCP types in it. An MCP tool handler and a future REST controller both call the same service functions and only differ in how they parse input and serialize output. Nothing here ships for v1 beyond writing the v1 MCP handlers as thin wrappers over service functions from the start, so there is no rewrite when REST is prioritized.
 
 ## 3.2 Deployment: local first
 
@@ -48,7 +48,7 @@ Consequences, all of them simplifying:
 - The SQL Server is reachable directly — either the user's existing Optima instance, or a local one holding a restored backup ([`02`](02-optima-data-model.md) §2.7.1).
 - Audit log is a local file, which is what an auditor wants anyway.
 
-Streamable HTTP stays in the design (§3.3) because the SDK gives it for free and the tool layer is transport-agnostic, but **hosted deployment is out of scope for v1** and must not drive any v1 decision. Revisit once the tool surface has proven itself.
+Streamable HTTP stays in the design (§3.3) because the SDK gives it for free and the service layer is transport-agnostic, but **hosted deployment is out of scope for v1** and must not drive any v1 decision. Revisit once the tool surface has proven itself.
 
 ## 3.3 Vendor neutrality
 
@@ -84,7 +84,7 @@ Rules:
 
 1. **Aggregate in SQL, not in JS.** `SUM()` server-side; bring across totals, not rows to add up. This is also the right call for context economy (§3.9).
 2. **Cast on the way out**: `CAST(SUM(x) AS VARCHAR(40))`, parse into `decimal.js`. Never let a monetary value transit as a JS `Number`.
-3. All arithmetic in the analysis engine (materiality ranking, tie-out residuals, Σ Aktywa − Σ Pasywa) uses `Decimal`.
+3. Any arithmetic the service layer does when shaping a response (e.g. summing a returned page) uses `Decimal`, never `number`.
 4. Format once, at output, with explicit scale.
 
 Worth a lint rule and a test that fails on any `number`-typed monetary field.
@@ -136,31 +136,25 @@ Plus a **PII deny-list** from Comarch's personal-data inventory, applied at the 
 
 ## 3.8 Output contract
 
-Every tool returns a findings document, not a data dump:
+Every tool returns normalized domain data, not a raw table dump and not a diagnosis:
 
 ```
-SUMMARY     what was checked, which DB/period, verdict
-FINDINGS    ranked by PLN materiality; each: what's wrong, evidence
-            (accounts, positions, amounts), why it matters, remediation
-NEXT STEPS  which tool to call next, which drill-down
-CAVEATS     unresolved schema concepts, buffer entries in/out, assumptions
+DATA        the requested domain entities (accounts, balances, journal
+            lines, ...), same shape regardless of Optima version
+META        which DB/profile/period, row count, truncation info
+CAVEATS     unresolved schema concepts, assumptions made while normalizing
 ```
 
-Remediation comes in two forms:
+The server does not rank, interpret, or recommend — that's the calling agent's job on top of normalized data. Verification and drill-down beyond a tool's own parameters is a read-only SQL snippet the user can paste into Optima's SQL console or SSMS; the server never emits `UPDATE`/`INSERT`/`DELETE` (§3.7).
 
-- **UI steps** — default for anything that changes Optima data. "Księgowość → Zestawienia księgowe → Bilans → pozycja B.II.3 → dodaj maskę `4-9-*`." The Optima UI applies business-logic validation we can't replicate, and keeps the customer inside supported behaviour ([`01`](01-integration-landscape.md)).
-- **SQL snippets, `SELECT` only** — verification and drill-down the user can paste into Optima's SQL console or SSMS.
-
-> **Decision needed.** The brief says "SQL snippet user will execute", which could include mutations. I've narrowed it to read-only SQL, with writes as UI steps: emitting `UPDATE` against Optima tables bypasses validation, is the standard way these DBs get corrupted, and would likely void the customer's support arrangement. The value we add is the diagnosis, which is read-only either way. If you want write-SQL, it should be separately gated, clearly labelled and off by default — say so and I'll design it.
-
-**Language:** findings use Polish domain terms (plan kont, obroty, salda, zestawienie, gałąź, bufor) regardless of conversation language — those are the words on the screen the user is looking at. Surrounding prose follows the user's language.
+**Language:** field values use Polish domain terms (plan kont, obroty, salda, zestawienie, gałąź, bufor) regardless of conversation language — those are the words on the screen the user is looking at. Surrounding prose follows the user's language.
 
 ## 3.9 Context economy
 
 A real chart of accounts runs to thousands of accounts; `CDN.Dekrety` to millions of rows.
 
-- **The model sees findings, not tables.** Aggregation and rule evaluation happen in TS, deterministically. The LLM interprets and prioritises; it doesn't do arithmetic over 5,000 rows.
+- **The model sees normalized domain data, not raw Optima tables.** Aggregation happens in SQL/TS, deterministically; the LLM doesn't do arithmetic over 5,000 rows.
 - **Progressive disclosure.** Summary → drill-down → detail, each taking an explicit narrowing argument.
-- **Hard caps with honest truncation.** Never silently drop rows. "Showing 20 of 347 findings by PLN impact; narrow with `account_prefix=`."
+- **Hard caps with honest truncation.** Never silently drop rows. "Showing 20 of 347 rows; narrow with `account_prefix=`."
 - **Cache by fingerprint** so a multi-tool conversation doesn't re-introspect per call.
 - **MCP resources** for reference material (resolved schema map, knowledge pack, account-type conventions) so clients pull on demand instead of us pushing into every result.
