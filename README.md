@@ -2,7 +2,7 @@
 
 MCP server for Comarch ERP Optima. Connects any MCP-capable agent (Claude, ChatGPT, Cursor, …) to the data in your Optima installation.
 
-**Status: Phase 1 skeleton.** One tool, `optima_describe_environment`, over a live connection. See [`docs/research/`](docs/research/README.md) for the design.
+**Status: Phase 1 skeleton.** One tool, `optima_describe_environment`, over a live connection, configured by hand. Next up is a double-click install that also reads backup files — see [Where this is going](#where-this-is-going) and [`docs/research/`](docs/research/README.md) for the design.
 
 ## Why
 
@@ -91,7 +91,28 @@ Reports what we are connected to and what works against it: the data source (liv
 
 ### Not yet implemented
 
-Backup ingestion (`--backup`), named connection profiles, and the accounting tools — see [`05`](docs/research/05-roadmap-and-open-questions.md).
+Backup ingestion, the packaged extension, and the accounting tools — see below and [`05`](docs/research/05-roadmap-and-open-questions.md).
+
+## Where this is going
+
+The next milestone is an **MCPB extension**: a single `.mcpb` file you double-click to install, configured in a UI instead of a JSON file. Full design in [`08`](docs/research/08-mcpb-extension.md).
+
+Two ways to configure it, and you pick exactly one:
+
+| Configuration | What happens |
+|---|---|
+| **A folder with backup files** (one or several folders) | The server starts a local SQL Server in a container, imports every `.bac` / `.bak` it finds, and serves them all. On later launches it re-imports only the backups that changed, so startup is instant. |
+| **A SQL Server address** | Straight read-only connection to an existing Optima database — what works today, minus the config file. |
+
+Notes on the backup mode, because they change what you need:
+
+- **Docker is required for it** (Docker Desktop, Colima, Rancher, Podman — any of them). No Docker means the SQL-server mode instead; there is no open-source engine that can restore a SQL Server backup.
+- The container runs **SQL Server 2025 Express**, which is free for production use and caps a database at 50 GB. Above that, point the extension at your own SQL Server instead.
+- **A folder of backups becomes several databases**, one per file, each labelled with its company and backup date. Tools take a `database` argument; when more than one is available the server asks rather than guessing.
+- **Importing a 20 GB backup takes minutes.** The server starts serving immediately and imports in the background; ask it to describe the environment and it reports progress per backup. Querying a database that isn't ready yet tells you how far along it is.
+- **The imported databases are full copies of your books**, payroll included, on a local Docker volume, and they persist between runs deliberately — that is what makes the second launch instant. `optima-mcp clean` removes them, the container and the volume.
+
+Everything stays local: the backups are mounted read-only, every imported database is set `READ_ONLY` at the engine level, and the container's port is bound to localhost only.
 
 ## Stack
 

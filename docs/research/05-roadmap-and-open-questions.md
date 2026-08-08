@@ -19,13 +19,15 @@ Mask wildcard alphabet (`*`, `?`, ranges, exclusion mode) is **still open** — 
 
 | Phase | Contents | Done when |
 |---|---|---|
-| **1 — Skeleton** | MCP server (stdio + streamable HTTP), connection profiles, SQL gateway with all five enforcement layers, introspection + fingerprint + SQLite cache, `optima_describe_environment`. Read-only login script, `npx` install. | A user points Claude or ChatGPT at their Optima DB and gets an honest capability report. |
-| **2 — Chart of accounts** | Knowledge pack v1, mask expansion engine, accounting tools — each specified individually first ([`04`](04-tool-surface.md)). | Real *analiza planu kont*. |
-| **3 — Statements** | Definition parser, coverage matrix, statement tools — each specified individually first. | Diagnose a balance sheet that doesn't balance and say how to fix it. |
-| **4 — Backup ingestion** | Startup state machine with preflight, `.bac` unwrap, fingerprint-and-skip cache, `restore` / `clean` subcommands, Express 2025 fallback engine. | `npx optima-mcp --backup ./x.bac` works ([`06`](06-backup-ingestion-setup.md)). |
+| **1 — Skeleton** | MCP server over stdio, SQL gateway with all five enforcement layers, introspection + fingerprint + cache, `optima_describe_environment`, read-only login script, `npx` install. | **Delivered.** A user points Claude at their Optima DB and gets an honest capability report. |
+| **2 — MCPB extension** | Bundle with a native config UI: directory-of-backups **or** SQL server URL; managed SQL Server container; scan + fingerprint + background import of every backup that changed; multi-database tool surface; `clean`. | An accountant installs a `.mcpb`, points it at a folder of `.bac` files, and gets an honest capability report per company without opening a terminal ([`08`](08-mcpb-extension.md)). |
+| **3 — Chart of accounts** | Knowledge pack v1, mask expansion engine, accounting tools — each specified individually first ([`04`](04-tool-surface.md)). | Real *analiza planu kont*. |
+| **4 — Statements** | Definition parser, coverage matrix, statement tools — each specified individually first. | Diagnose a balance sheet that doesn't balance and say how to fix it. |
 | **5 — Hardening** | Multi-version knowledge-pack coverage, anonymised schema-report contribution flow, more rules, adjacent domains. | |
 
-Phase 1 doesn't depend on any spike and can be built in parallel with securing DB access.
+Backup ingestion comes second because it is what turns "I have a client's `.bac` on disk" into a working install, and it is the only phase that removes the terminal from the setup path. It also unblocks the remaining mask spike — a second sample backup becomes something we can ingest by dropping it in a folder.
+
+Phases 1 and 2 depend on no spike; both can be built in parallel with securing further DB access.
 
 ## 5.3 Risks
 
@@ -38,27 +40,35 @@ Phase 1 doesn't depend on any spike and can be built in parallel with securing D
 | PII into the LLM context | RODO/GDPR exposure | Deny-list from Comarch's own personal-data doc, aggregate by default, redaction, explicit opt-in. |
 | Performance hit on a live production DB | Uninstalled during month-end close | NOLOCK/snapshot discipline, timeouts, row caps, concurrency limit, off-peak guidance in docs. |
 | Customer's Comarch partner objects on support grounds | Adoption blocker | Read-only login, audit log, clear docs that we only `SELECT`. Make the read-only posture a selling point, not a footnote. |
-| Backup restore needs a licensed SQL Server | Legal/cost | Resolved ([`02`](02-optima-data-model.md) §2.7.1). No open-source engine can restore `.bak` — Babelfish is protocol-compatible, not storage-compatible; OrcaMDF is abandoned and experimental. Default is the user's own existing instance (they run Optima, so they have one). Free fallback is Express 2025, whose limit rose from 10 GB to 50 GB. Developer Edition is excluded — production use breaches its EULA. |
-| Optima DB over 50 GB with no existing instance | Small user segment blocked | Falls back to "use your own SQL Server". Document it; don't engineer around it in v1. |
-| Cold-start restore exceeds the MCP client's startup timeout | Server appears broken on first run | Fingerprint-and-skip cache makes every later launch instant; `npx optima-mcp restore` prewarm is the documented first step ([`02`](02-optima-data-model.md) §2.7). |
-| Restored backup persists on local disk | Full copy of the books, incl. payroll, left lying around | Persistence is deliberate (it's what makes startup fast) but must be documented loudly. `--ephemeral` and `npx optima-mcp clean` are the escape hatches; restored DBs are name-tagged so cleanup never touches someone else's database. |
+| Backup restore needs a licensed SQL Server | Legal/cost | Resolved ([`02`](02-optima-data-model.md) §2.7.1). No open-source engine can restore `.bak` — Babelfish is protocol-compatible, not storage-compatible; OrcaMDF is abandoned and experimental. Default is a **managed Express container** ([`08`](08-mcpb-extension.md) §8.4) — free for production use; the user's own instance is the escape hatch. Developer editions are excluded — production use breaches their EULA, and `Developer` isn't even a valid `MSSQL_PID` on the 2025 images. |
+| Optima DB over 50 GB (Express cap) | Small user segment blocked | Per-file, not per-install: import everything that fits, report what didn't, point at the "own SQL Server" setting ([`08`](08-mcpb-extension.md) §8.5). |
+| **Docker missing or not running on the user's machine** | Backup mode dead — and this is now the *primary* mode | Detect early and specifically, distinguishing not-installed from not-running ([`08`](08-mcpb-extension.md) §8.10). Never auto-install. The live-server mode needs no container. **Open sub-risk:** a GUI-launched client gives the server a minimal `PATH`, so `docker` may not resolve at all — probe explicit paths, and test this before building the mode ([`08`](08-mcpb-extension.md) §8.4, §8.11 item 2). |
+| Cold-start restore exceeds the MCP client's startup timeout | Server appears broken on first run | Structural: the server serves immediately and the import runs behind it, reported as progress ([`08`](08-mcpb-extension.md) §8.6). Fingerprint-and-skip makes every later launch instant. |
+| Several databases served at once, and the agent picks the wrong one | Right shape, wrong company — indistinguishable from a correct answer | Never infer a default when more than one source is ready; refuse and list ([`08`](08-mcpb-extension.md) §8.7). Every result names its company and backup date. |
+| Import worker holds `sa` on the container | Privilege beyond what the design claims | `sa` is import-only; the MCP query path uses a `db_datareader` login, every imported DB is `SET READ_ONLY`, port is loopback-only ([`08`](08-mcpb-extension.md) §8.8). |
+| Imported backups persist on local disk | Full copies of the books, incl. payroll, left lying around — potentially several, on a Docker volume the user can't see in Finder | Persistence is deliberate (it's what makes startup fast) but must be documented loudly, in the extension UI and in the environment report, with total disk used. `optima-mcp clean` removes container and volume; restored DBs are name-tagged so cleanup never touches someone else's database ([`08`](08-mcpb-extension.md) §8.8). |
 | Stale backup mistaken for live data | Wrong conclusions, confidently stated | `optima_describe_environment` always reports the source and the backup's date ([`04`](04-tool-surface.md)). |
 | Comarch ships a real API | Strategic | Low near-term probability given their stated position. The domain-analysis layer keeps its value on any substrate. |
 
 ## 5.4 Open questions
 
 1. **Write-SQL generation.** I narrowed the brief's "SQL snippet user will execute" to `SELECT`-only, with changes as Optima UI steps ([`03`](03-architecture.md) §3.8). Confirm, or tell me to design a gated write-SQL mode.
-2. **Who is the user?** One accounting office on one company DB, or a biuro rachunkowe with dozens of client DBs? The latter makes profile management, multi-company tooling and cross-client benchmarking first-class.
-3. **Output language.** I assumed Polish domain terms inside whatever language the user converses in. Confirm.
-4. **Optima version floor.** Back to 2019, or current releases only? Materially changes knowledge-pack effort. What do target customers actually run?
+2. **Who is the user?** Answered by construction: a directory of backups yields several company databases, so multi-database is first-class from phase 2 ([`08`](08-mcpb-extension.md) §8.7). Cross-client *consolidation* remains excluded.
+3. **Output language.** I assumed Polish domain terms inside whatever language the user converses in. Confirm. (Extension config UI text is written in Polish — [`08`](08-mcpb-extension.md) §8.2, §8.10.)
+4. **Optima version floor.** Back to 2019, or current releases only? Materially changes knowledge-pack effort. What do target customers actually run? Also sets the container image version: restores go forward only, so the image must be at least as new as the newest backup anyone brings.
 5. **Licence and openness.** Is the knowledge pack ([`02`](02-optima-data-model.md) §2.6) open, or the commercial core?
+6. **Which Node version does Claude Desktop provide to a bundled server?** Decides the `compatibility.runtimes.node` floor and whether `node:sqlite` is usable ([`08`](08-mcpb-extension.md) §8.5, §8.9). Empirical, cheap, and blocks packaging choices.
 
 ### Decided
 
 - **Deployment: local desktop, stdio.** ([`03`](03-architecture.md) §3.2) Credential never leaves the machine, and we never become a data processor for a database full of payroll. Streamable HTTP stays implemented but unsupported until hosted is on the table.
-- **Backup ingestion: startup step, not a tool.** ([`02`](02-optima-data-model.md) §2.7) Path passed to `npx`; restore completes before the server serves MCP. Removes the async job model and the polling tool entirely.
-- **Restore target: the user's own SQL Server by default**, Express 2025 as the free fallback. ([`02`](02-optima-data-model.md) §2.7.1) No open-source engine can read `.bak`.
+- **Distribution: MCPB bundle is the user-facing install**, `npx` remains the developer and CI path. ([`08`](08-mcpb-extension.md)) A config UI with a native directory picker is the only setup an accountant can complete unaided.
+- **Two configuration modes, mutually exclusive:** a directory (or several) of backup files, or a live SQL Server URL. ([`08`](08-mcpb-extension.md) §8.3) Both set is an error, not a precedence rule — the failure mode is analysing a stale backup while believing it's live.
+- **Restore target: a managed SQL Server Express container by default**, the user's own instance as an env-var escape hatch for over-50 GB databases. ([`08`](08-mcpb-extension.md) §8.4) A config UI can't reasonably ask for an instance name and a `CREATE DATABASE` login, and pointing the default at the instance that runs live Optima is a bad default.
+- **Backup import: background, observable, not a tool.** ([`08`](08-mcpb-extension.md) §8.6) N multi-GB restores can't fit inside a client's startup timeout, and an extension user has no terminal to prewarm in. The model gets *visibility* into an import it cannot trigger or retarget; there is no connect tool and no restore tool.
 
 ## 5.5 Next
 
 ~~Fastest de-risking: get one real Optima DB with Księga Handlowa data and run S1–S3 in a single sitting.~~ Done — see [`07`](07-spike-0-findings.md). Remaining de-risking: a **second** sample backup to observe actual mask/range usage in zestawienia (the one sampled so far uses none), and to check whether the S1 corrections (`DekretyKonta` not `Dekrety`, missing `Zrodla`) generalise or were specific to that install. Build Phase 1 in parallel — it depends on none of them.
+
+Phase 1 is delivered; **Phase 2 is the MCPB extension** ([`08`](08-mcpb-extension.md) §8.11). Its first two items are cheap empirical checks that can reshape the rest — what Node the host provides, and whether a bundled server can reach Docker at all from a GUI-launched client. Do those before writing container code. Note that phase 2 also makes the second mask-spike sample trivially ingestible: drop a `.bac` in the folder.

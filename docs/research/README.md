@@ -11,7 +11,9 @@ Research date 2026-08. Claims carry confidence labels; **[unverified]** items mu
 | [03 — Architecture](03-architecture.md) | Layers, local-first deployment, TypeScript stack, decimal hazard, CLI and startup, read-only enforcement, output contract, context economy |
 | [04 — Tool surface](04-tool-surface.md) | The one v1 tool (database introspection); rules for the rest; what's excluded by design |
 | [05 — Roadmap](05-roadmap-and-open-questions.md) | Four blocking spikes, phases, risks, decisions needed |
-| [06 — Backup ingestion setup](06-backup-ingestion-setup.md) | Why the auth-page idea doesn't work, the CLI entry point, startup state machine, on-disk state, failure messages |
+| [06 — Backup ingestion setup](06-backup-ingestion-setup.md) | Why a browser page can't pick the backup and a native picker must, entry points, why the restore is preflighted, on-disk state |
+| [07 — Spike 0 findings](07-spike-0-findings.md) | Empirical run against a real backup: `.bac` is a renamed `.bak`, real schema, `Acc_*` settled, zestawienia tables found, definitions are readable text |
+| [08 — MCPB extension](08-mcpb-extension.md) | **Current deliverable.** Config UI (folder of backups \| SQL server URL), managed SQL Server container, scan/fingerprint/background import, multi-database tool surface, packaging, failure messages |
 
 ## Summary
 
@@ -25,15 +27,17 @@ Research date 2026-08. Claims carry confidence labels; **[unverified]** items mu
 
 **Tool surface is one tool for now** — database introspection ([04](04-tool-surface.md)). The accounting tools get specified individually, each immediately before it's built.
 
-**Stack:** TypeScript on Node 24, `@modelcontextprotocol/sdk`, `mssql`/Tedious (pure JS, no native deps), `decimal.js` for money, built-in `node:sqlite` for cache. `npx optima-mcp` with zero system prerequisites.
+**Stack:** TypeScript on Node, `@modelcontextprotocol/sdk`, `mssql`/Tedious (pure JS, no native deps), `decimal.js` for money, `node:sqlite` for cache where the host runtime offers it, JSON for the import registry where it doesn't. Distribution is an `.mcpb` bundle; `npx optima-mcp` for development, with zero system prerequisites in live mode.
 
-**Local desktop, stdio.** Credential never leaves the machine; we never become a data processor for a DB full of payroll. Data source is fixed at startup — either a live connection or a backup restored once at launch:
+**Local desktop, stdio.** Credential never leaves the machine; we never become a data processor for a DB full of payroll. The set of data sources is fixed by configuration, never chosen by the model — two mutually exclusive modes ([08](08-mcpb-extension.md)):
 
 ```
-npx optima-mcp --profile biuro-klient-abc
-npx optima-mcp --backup ./CDN_ABC.bac
+a folder (or several) of .bac / .bak files   → managed SQL Server container, N databases
+a SQL Server URL                             → live read-only connection
 ```
 
-No open-source engine can restore a `.bak` (Babelfish is protocol-compatible, not storage-compatible; OrcaMDF is abandoned). Restore target defaults to the SQL Server the user already runs Optima on; free fallback is Express 2025, whose database cap rose from 10 GB to 50 GB.
+No open-source engine can restore a `.bak` (Babelfish is protocol-compatible, not storage-compatible; OrcaMDF is abandoned), so the target is Microsoft SQL Server — by default an **Express container we manage**, free for production use and capped at 50 GB; the user's own instance is the escape hatch above that.
 
-**Four spikes block detailed design** ([05](05-roadmap-and-open-questions.md) §5.1), all needing the same thing: access to one real Optima DB with Księga Handlowa data. That's the critical path.
+**The install is an MCPB bundle** — the user picks a folder in a native dialog and never opens a terminal or edits JSON. Three things follow from that ([08](08-mcpb-extension.md)): a directory means several company databases served at once, several multi-GB restores can't fit in a startup timeout so the import runs behind the serving boundary with reported progress, and a container runtime becomes a hard dependency of the backup mode.
+
+**Status:** Phase 1 skeleton delivered (live connection, `optima_describe_environment`). Phase 2 is the extension. Spikes S1–S4 are answered empirically ([07](07-spike-0-findings.md)); the mask-wildcard alphabet is the one open spike and needs a second real DB whose zestawienia actually use masks.

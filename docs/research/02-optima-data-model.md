@@ -120,16 +120,20 @@ The **knowledge pack** — versioned YAML mapping domain concepts to physical ta
 
 ## 2.7 Backup ingestion
 
-**Decided:** ingestion is a **one-time setup step at server startup**, not a tool. The user passes the backup path to the `npx` command; the server restores before it starts serving MCP. No async job model, no polling tool, no restore tool in the surface ([`04`](04-tool-surface.md)). Setup UX, entry points and the full state machine are in [`06`](06-backup-ingestion-setup.md).
+**Decided:** ingestion is **configuration, not a tool** — the user points the server at a directory of backups, and it imports every one of them. The set of sources is fixed before the process starts; individual databases become queryable as their imports finish ([`08`](08-mcpb-extension.md) §8.6). No restore tool, no connect tool in the surface ([`04`](04-tool-surface.md)).
 
 ```
-npx optima-mcp --backup ./CDN_ABC.bac
-npx optima-mcp --profile biuro-klient-abc          # live connection instead
+npx optima-mcp --backup-dir "D:\Kopie"                        # all backups in the folder
+npx optima-mcp "Server=...;Database=CDN_ABC;..."              # live connection instead
 ```
+
+Setup UX, entry points and the state machine: [`06`](06-backup-ingestion-setup.md) for the per-file mechanics, [`08`](08-mcpb-extension.md) for the current end-to-end design.
 
 **Format.** Optima accepts `.bac` and `.bak` for restore **[confirmed]**. `.bac` **is** a renamed `.bak` — `RESTORE HEADERONLY`/`RESTORE DATABASE` work directly against it, no unwrap step. It's compressed with SQL Server's own native `MS_XPRESS` backup compression (not a Comarch-specific container). Settled empirically in [`07`](07-spike-0-findings.md) §S4.
 
 ### Startup sequence
+
+Per backup file; [`08`](08-mcpb-extension.md) §8.5 is the current version, which runs this loop over every file in the configured directories, serially, off the startup path.
 
 ```
 --backup <path>
@@ -144,13 +148,12 @@ npx optima-mcp --profile biuro-klient-abc          # live connection instead
 
 **Fingerprint-and-skip is what makes this workable.** A first restore of a 20 GB database is minutes; stdio clients have startup timeouts and will kill the process. So:
 
-- Second and subsequent launches are instant — the restored DB is reused.
-- Ship `npx optima-mcp restore ./CDN_ABC.bac` as a **prewarm command** the user runs once in a terminal, with progress on stderr, before wiring the server into their client config. The server then starts instantly.
-- If the server starts cold with `--backup` and the restore looks long, log progress to stderr and let the client's own timeout decide. Document the prewarm command as the recommended path.
+- Second and subsequent launches are instant — the imported DB is reused. Per file, this is exactly "import only if the backup changed".
+- A backup that *is* new or changed still takes minutes, so the import runs in the background with reported progress rather than blocking startup ([`08`](08-mcpb-extension.md) §8.6). That also covers someone dropping a fresh backup into an already-configured folder.
 
-**Lifecycle:** restored databases persist between runs by default (that's the point of the fingerprint cache). `--ephemeral` drops on exit; `npx optima-mcp clean` removes all restored DBs and files. The restored DB carries a name marking it as ours (`OPTIMAMCP_<fingerprint>`) so cleanup is unambiguous and we never touch a database we didn't create.
+**Lifecycle:** imported databases persist between runs (that's the point of the fingerprint cache). `optima-mcp clean` removes them along with the container and its volume. Each carries a name marking it as ours (`OPTIMAMCP_<company>_<fingerprint>`) so cleanup is unambiguous and we never touch a database we didn't create. Removal is that deliberate command and nothing else — a flag that silently discards an hour of restoring is a bad thing to have within reach.
 
-**Confidentiality:** a restored backup is a full copy of the books including payroll. Local disk only, never a shared or cloud volume by default. Persistence-by-default is a deliberate usability trade-off and must be documented loudly, with `clean` and `--ephemeral` as the escape hatches.
+**Confidentiality:** a restored backup is a full copy of the books including payroll. Local disk only, never a shared or cloud volume by default. Persistence-by-default is a deliberate usability trade-off and must be documented loudly, with `clean` as the escape hatch — more loudly in container mode, where the copies live on a Docker volume the user can't see in their file manager ([`08`](08-mcpb-extension.md) §8.8).
 
 ### 2.7.1 Where to restore — engine options
 
@@ -163,15 +166,17 @@ npx optima-mcp --profile biuro-klient-abc          # live connection instead
 | Commercial recovery tools (Stellar, Cigati, SysTools) | Proprietary, paid, forensic-recovery oriented. Wrong tool, wrong licence. **Rejected.** |
 | FreeTDS | Client library, not a server. **N/A** |
 
-So the target is Microsoft SQL Server. Three ways to get one, in preference order:
+So the target is Microsoft SQL Server. Three ways to get one:
 
-**1. The user's own existing instance — the default.** Anyone running Optima already has a licensed SQL Server. Restoring a backup into it costs nothing, adds no install step, and raises no licensing question. This should be the default for the local deployment ([`05`](05-roadmap-and-open-questions.md) §5.4 Q3) and is what `--sql-server` points at:
+**The default is option 2, Express, run in a container we manage** ([`08`](08-mcpb-extension.md) §8.4). Option 1 is the escape hatch for databases over Express's 50 GB cap. Option 3 is excluded — and on the 2025 images `Developer` isn't even a valid `MSSQL_PID`.
+
+**1. The user's own existing instance.** Anyone running Optima already has a licensed SQL Server. Restoring a backup into it costs nothing, adds no install step, and raises no licensing question — but it costs the user an instance name and a `CREATE DATABASE` login at setup time, and defaulting to the instance that runs their live Optima invites restoring a client's backup into production. Reachable through `OPTIMA_RESTORE_TARGET`:
 
 ```
-npx optima-mcp --backup ./CDN_ABC.bac --sql-server "localhost\OPTIMA"
+npx optima-mcp --backup-dir "D:\Kopie" --restore-target "localhost\OPTIMA"
 ```
 
-**2. SQL Server 2025 Express — the free fallback.** For someone holding a backup with no server (an accountant handed a client's `.bac`). **Express 2025 raised the max relational database size from 10 GB to 50 GB** **[confirmed — Microsoft Learn]**, which is the finding that changes this recommendation: 10 GB excluded most real Optima databases, 50 GB covers the large majority. Free for production use, so no licensing grey area. Still capped on CPU (lesser of 1 socket / 4 cores) and buffer pool, so restore and analysis are slower — acceptable for a one-time setup step. Databases over 50 GB fall back to option 1.
+**2. SQL Server 2025 Express — the default, in a container.** For someone holding a backup with no server (an accountant handed a client's `.bac`), and for everyone else too, because it needs no configuration at all. **Express 2025 raised the max relational database size from 10 GB to 50 GB** **[confirmed — Microsoft Learn]**: 10 GB excluded most real Optima databases, 50 GB covers the large majority. Free for production use, so no licensing grey area. Still capped on CPU (lesser of 1 socket / 4 cores) and buffer pool, so restore and analysis are slower — acceptable for a one-time import. Databases over 50 GB fall back to option 1.
 
 **3. Developer Edition — avoid.** Full Enterprise features, no size cap, free — but licensed strictly for development, test and demonstration, **not production**. A user analysing their own live books is production use. Don't build a default that pushes users into an EULA breach. Mention it only for our own dev and CI.
 
@@ -179,7 +184,7 @@ npx optima-mcp --backup ./CDN_ABC.bac --sql-server "localhost\OPTIMA"
 
 - **Restores go forward only.** A 2022 backup won't restore on 2019. Whatever engine we target must be at least as new as the newest backup supported; with Optima 2026 on SQL Server 2025, track the latest.
 - Collation `Polish_CI_AS` on the instance.
-- **Docker is optional, not required.** Options 1 and 2 are both native instances. Shipping a container is a convenience for option 2 on Linux/macOS, not the architecture.
+- **A container runtime is a hard requirement of backup mode** ([`08`](08-mcpb-extension.md) §8.4) — it's what removes the "find your instance name" step from setup. The live-connection mode needs no container, and remains the answer for anyone who won't install Docker.
 
 ## Sources
 
