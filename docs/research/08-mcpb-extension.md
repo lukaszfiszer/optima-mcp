@@ -227,21 +227,26 @@ Mode B changes the read-only story of [`03`](03-architecture.md) §3.7 in one re
 - **`manifest_version`: `0.3`** — the version the spec declares current (last updated 2025-12-02). Note the spec's own `uv` example uses `0.4`, and Claude Desktop sends `x-mcpb-manifest-version: 0.4` when querying the extension registry, so `0.4` exists in practice ahead of the written spec. Stay on `0.3`: we use no field that requires more, and `mcpb validate` is the arbiter.
 - `compatibility.platforms`: `darwin`, `win32`, `linux`.
 
-### `compatibility.runtimes.node` is an execution-model switch, not a compatibility assertion
+### `compatibility.runtimes.node`: declare it, and keep the floor genuinely low
 
-**Decided: declare no `runtimes.node`, and check the runtime ourselves at startup.**
+**Decided: declare `runtimes.node` as the spec requires, set to the true minimum the bundled code needs — and keep that minimum low enough that the host's built-in Node clears it.**
 
-There is no `node` binary inside Claude.app. "Node.js ships with Claude" means Electron's *embedded* Node: a `type: "node"` server whose `command` is `node` with a script in `args[0]` is run in an Electron **`utilityProcess`**, and the built-in version is that Electron build's `process.versions.node`. What the host does with our declared range (§8.13):
+[`MANIFEST.md`](https://github.com/modelcontextprotocol/mcpb/blob/main/MANIFEST.md#compatibility) is explicit — *"Only specify the runtime(s) your extension actually uses… For Node.js extensions: specify `node` version"* — and the field is a portability declaration for **any** MCPB host, not a Claude Desktop hint. A host with no embedded runtime has nothing else to go on. Omitting it is not an option.
+
+What the host findings change is the *value*, not the decision to declare. There is no `node` binary inside Claude.app: "Node.js ships with Claude" means Electron's *embedded* Node, and a `type: "node"` server whose `command` is `node` with a script in `args[0]` runs in an Electron **`utilityProcess`** on that build's `process.versions.node`. The resolution ladder (§8.13):
 
 | Declared | Built-in satisfies it | Result |
 |---|---|---|
-| nothing | — | **built-in node**, always |
-| a range | yes | built-in node |
-| a range | no | **searches the machine for a system Node**, takes the first install matching the range, else the highest found; only with no system Node at all does it fall back to built-in |
+| a range | yes | **built-in node** — the target |
+| a range | no | searches the machine for a system Node, takes the first install matching the range, **else the highest found** — which may not satisfy the range at all |
+| nothing | — | built-in node *when the host's `isUsingBuiltInNodeForMcp` flag is on*; with it off, the highest system Node found, matched against nothing |
 
-So a floor the built-in doesn't clear does not produce a clean "unsupported" error — it silently moves us out of the host's runtime and onto whatever Node the user happens to have, chosen by the host, with no signal in the UI. That is a worse failure than the one the floor was meant to prevent, and it makes the runtime a property of the user's machine instead of the bundle.
+Two consequences, and neither is "declare nothing":
 
-Declaring nothing pins us to the built-in in every case, which is the one runtime we can actually test against. Verify the version in our own startup path, report it in the environment report and the log banner (§8.12), and fail with the message in §8.10 if it is genuinely too old.
+1. **A floor above the built-in is the thing to avoid.** It is the one input that moves us off the host's runtime onto whatever Node the user happens to have, picked by the host, with no signal in the UI. So the floor is a real engineering constraint on the code, not a number chosen after the fact: no `node:sqlite`, no APIs newer than the floor, target output the built-in can run. Our stated Node 22+ development stack ([`03`](03-architecture.md) §3.4) is about the dev and `npx` path — the bundle's declared floor must be the lower figure we actually need.
+2. **The declaration is not enforced end-to-end**, since the last-resort branch takes the highest system Node regardless of the range. So it never removes the need to check `process.versions.node` in our own startup path, report it in the environment report and the log banner (§8.12), and fail with the message in §8.10 if the runtime is genuinely too old. The declaration is what well-behaved hosts match against; the startup check is what catches the ones that don't.
+
+**[unverified: the built-in version.]** Read it from the log banner on the first real install (§8.11 item 1), then set the floor at or below it. Until then the safe provisional value is the lowest version the code actually requires — do not raise it to match the dev environment.
 
 Consequences to carry:
 
