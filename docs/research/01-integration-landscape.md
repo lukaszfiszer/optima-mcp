@@ -19,7 +19,7 @@ Direct read-only SQL is the only licence-free, vendor-neutral path. Optima shipp
 
 Direct `INSERT`/`UPDATE`/`DELETE` bypasses application business logic (document numbering, rozrachunki, audit trail, period locking, VAT registers). Standard way Optima databases get corrupted, and the standard reason a Comarch partner drops support for an installation. **[high confidence — universal partner practice; exact contractual wording is in the customer's own Comarch agreement]**
 
-Consequence: the server emits no executable mutations. Changes are expressed as Optima UI steps; emitted SQL is `SELECT`-only. See [`03`](03-architecture.md) §3.8.
+Consequence: the server emits no executable mutations. Changes are expressed as Optima UI steps; emitted SQL is `SELECT`-only. See [`03`](03-architecture.md) §3.9.
 
 ## Personal data
 

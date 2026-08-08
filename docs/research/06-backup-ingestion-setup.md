@@ -8,7 +8,7 @@ How the user gets a backup file into the server ([`02`](02-optima-data-model.md)
 
 **Doesn't work.** Four independent reasons, any one of which kills it:
 
-1. **MCP authorization is HTTP-only, and we're stdio.** The spec is explicit: implementations using stdio *SHOULD NOT* follow the authorization specification and should retrieve credentials from the environment. OAuth in MCP exists to protect network-exposed servers from network attackers; a local stdio process has neither problem. Using it would mean abandoning the local-first decision ([`03`](03-architecture.md) §3.2) — and that decision is what keeps us out of data-processor territory on a database full of payroll.
+1. **MCP authorization is HTTP-only, and we're stdio.** The spec is explicit: implementations using stdio *SHOULD NOT* follow the authorization specification and should retrieve credentials from the environment. OAuth in MCP exists to protect network-exposed servers from network attackers; a local stdio process has neither problem. Using it would mean abandoning the local-first decision ([`03`](03-architecture.md) §3.1) — and that decision is what keeps us out of data-processor territory on a database full of payroll.
 2. **It isn't authorization.** Hijacking the auth handshake to run a setup wizard is a misuse of the step. Client behaviour around auth pages is inconsistent enough when used as intended; it won't be reliable when used as a file-upload UI.
 3. **A browser can't give us a local path.** This is the part that kills the idea even in a non-OAuth form. Drag-drop and `<input type=file>` give a `File` object with no absolute path — browsers deliberately withhold it, and the File System Access API gives a handle, not a path. So a web page can't say "ingest the file at `D:\Kopie\CDN_ABC.bac`"; it can only *stream the bytes*.
 4. **Streaming the bytes is absurd here.** Real Optima backups run to tens of GB and the file is *already on the same disk as the server*. Uploading it to localhost means reading 20 GB and writing a second 20 GB copy, doubling disk use and adding minutes, to end up with a file we could have opened directly.
@@ -71,7 +71,7 @@ ingest(path)
 
 Two details worth keeping:
 
-- **`SET READ_ONLY` on the restored database.** Free, engine-enforced immutability on top of the read-only login and the statement gate ([`03`](03-architecture.md) §3.7). On the backup path there is no reason for the database ever to be writable again, so make it structurally impossible.
+- **`SET READ_ONLY` on the restored database.** Free, engine-enforced immutability on top of the read-only login and the statement gate ([`03`](03-architecture.md) §3.8). On the backup path there is no reason for the database ever to be writable again, so make it structurally impossible.
 - **Preflight before the long operation.** Every one of those checks is seconds; the restore is minutes. Failing on collation after 8 minutes of restore is the difference between a tool that feels solid and one that feels broken.
 
 **Progress:** no MCP channel exists during startup, so write progress to stderr (clients surface it in logs). `RESTORE` percentage is readable from `sys.dm_exec_requests.percent_complete` on a second connection — use it for the `restore` progress bar.
