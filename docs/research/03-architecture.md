@@ -4,38 +4,19 @@
 
 ```mermaid
 flowchart TB
-    MCPClient["MCP client\n(Claude, ChatGPT, Cursor, Continue, custom agent)"]
-    RESTClient["REST client\n(future, out of scope for v1)"]
-
-    subgraph Adapters["Protocol adapters — thin, per-transport"]
-        MCPAdapter["MCP tool handlers\nzod schemas, JSON-RPC"]
-        RESTAdapter["REST controllers\n(future)"]
-    end
-
-    subgraph Core["optima-mcp core — shared, transport-agnostic"]
-        Service["Service layer\nassembles normalized domain responses"]
-        Domain["Domain layer\nknowledge pack (YAML) resolved\nagainst actual schema — hides version differences"]
-        Catalog["Schema catalog\nintrospection, fingerprint, cache"]
-        Gateway["SQL gateway\nread-only enforcement, params,\ntimeouts, row caps, PII deny-list, audit log"]
-    end
-
+    Client["MCP client\n(Claude, ChatGPT, Cursor, Continue, custom agent)"]
+    Handlers["MCP tool handlers\nthin: parse input, call domain layer, serialize output"]
+    Domain["Domain layer\nknowledge pack (YAML) resolved against actual schema\n— hides Optima-version differences, returns normalized data"]
+    Catalog["Schema catalog\nintrospection, fingerprint, cache"]
+    Gateway["SQL gateway\nread-only enforcement, params, timeouts,\nrow caps, PII deny-list, audit log"]
     DB["live SQL Server | ephemeral SQL Server (restored backup, optional)"]
 
-    MCPClient -->|"MCP over stdio | streamable HTTP"| MCPAdapter
-    RESTClient -.->|"HTTP/JSON (future)"| RESTAdapter
-    MCPAdapter --> Service
-    RESTAdapter -.-> Service
-    Service --> Domain
-    Domain --> Catalog
-    Catalog --> Gateway
-    Gateway -->|"TDS, read-only login"| DB
+    Client -->|"MCP over stdio"| Handlers --> Domain --> Catalog --> Gateway -->|"TDS, read-only login"| DB
 ```
 
-Each layer is independently testable. Safety lives in the gateway, version drift in the catalog, Optima knowledge in the domain layer, and the protocol adapters stay thin.
+The server is a **DB-access wrapper, not a diagnostic engine**: tools return normalized, domain-level data. The domain layer's only job is translating an Optima-version-specific schema into a stable shape — not judging it. Ranking, rule-checking, and interpretation are the calling agent's job.
 
-The server is a **DB-access wrapper, not a diagnostic engine**: tools return normalized, domain-level data — the domain layer's job is translating an Optima-version-specific schema into a stable shape, not judging it. Ranking, rule-checking, and interpretation are the calling agent's job.
-
-The **service layer** is the seam for the REST future stated in §3.2/§3.3: it holds the actual tool logic (resolving domain entities via the domain layer, shaping the response) with no MCP types in it. An MCP tool handler and a future REST controller both call the same service functions and only differ in how they parse input and serialize output. Nothing here ships for v1 beyond writing the v1 MCP handlers as thin wrappers over service functions from the start, so there is no rewrite when REST is prioritized.
+Handlers hold no business logic, so a REST controller can call the same domain-layer functions later without a rewrite — but that's a one-line consequence of keeping handlers thin, not a layer to build now.
 
 ## 3.2 Deployment: local first
 
@@ -48,13 +29,13 @@ Consequences, all of them simplifying:
 - The SQL Server is reachable directly — either the user's existing Optima instance, or a local one holding a restored backup ([`02`](02-optima-data-model.md) §2.7.1).
 - Audit log is a local file, which is what an auditor wants anyway.
 
-Streamable HTTP stays in the design (§3.3) because the SDK gives it for free and the service layer is transport-agnostic, but **hosted deployment is out of scope for v1** and must not drive any v1 decision. Revisit once the tool surface has proven itself.
+Streamable HTTP stays in the design (§3.3) because the SDK gives it for free and the domain layer is transport-agnostic, but **hosted deployment is out of scope for v1** and must not drive any v1 decision. Revisit once the tool surface has proven itself.
 
 ## 3.3 Vendor neutrality
 
 - Plain MCP, no client-specific extensions. Target spec revision 2025-06-18 minimum; verify the current revision at build time and negotiate down rather than requiring the newest.
 - **stdio is the v1 transport.** Streamable HTTP is implemented but unsupported/undocumented until hosted deployment is on the table. Same tool surface either way.
-- The MCP tool handlers are a thin protocol adapter over the service layer (§3.1); they hold no business logic. This is what keeps a future REST adapter additive rather than a rewrite.
+- The MCP tool handlers are a thin protocol adapter over the domain layer (§3.1); they hold no business logic. This is what keeps a future REST adapter additive rather than a rewrite.
 - **No sampling or elicitation in the core path.** Optional protocol features with uneven client support; a tool that requires them breaks on half the ecosystem. Optional UX only, with a working fallback.
 - `readOnlyHint: true`, `openWorldHint: false` on every tool. These are trust hints, not enforcement — enforcement is §3.7 — but they let clients present the server honestly.
 - Output is text/Markdown. Attach structured content where supported, but the primary payload must be readable without a schema the model has to be taught.
@@ -84,7 +65,7 @@ Rules:
 
 1. **Aggregate in SQL, not in JS.** `SUM()` server-side; bring across totals, not rows to add up. This is also the right call for context economy (§3.9).
 2. **Cast on the way out**: `CAST(SUM(x) AS VARCHAR(40))`, parse into `decimal.js`. Never let a monetary value transit as a JS `Number`.
-3. Any arithmetic the service layer does when shaping a response (e.g. summing a returned page) uses `Decimal`, never `number`.
+3. Any arithmetic done while shaping a response (e.g. summing a returned page) uses `Decimal`, never `number`.
 4. Format once, at output, with explicit scale.
 
 Worth a lint rule and a test that fails on any `number`-typed monetary field.
