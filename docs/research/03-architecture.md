@@ -1,152 +1,207 @@
 # 03 — Architecture
 
-## 3.1 Layers
+Domain logic is transport-agnostic. MCP is the v1 surface; a REST API must be addable later without reshaping the core.
 
+## 3.1 Non-functional requirements
+
+| NFR | Constraint |
+|---|---|
+| **Local-first (v1)** | Desktop process next to the MCP client (stdio). Credentials never leave the machine; we are not a data processor for payroll-heavy DBs ([`01`](01-integration-landscape.md)). |
+| **Read-only by design** | DB permissions + statement gate + PII deny-list. No mutations from the server. |
+| **Correct money** | No float64 for amounts. Aggregate in SQL; arithmetic via `decimal.js`. |
+| **Install friction** | `npx optima-mcp` with zero system prerequisites (pure JS driver, bundled ESM). |
+| **Vendor-neutral MCP** | Plain MCP (spec ≥ 2025-06-18). No client-specific extensions; no sampling/elicitation on the core path. |
+| **Context economy** | Findings, not table dumps. Progressive disclosure; hard caps with honest truncation. |
+| **Simplicity** | Thin adapters; one responsibility per layer; fail loud at startup, not mid-conversation. |
+| **Extensibility — REST** | Same use-cases and Zod schemas must mount behind HTTP (e.g. Hono/Fastify) without duplicating domain code. MCP and REST are adapters over one core. |
+
+Hosted / streamable-HTTP deployment is out of scope for v1 and must not drive v1 decisions. Revisit once the tool surface is proven.
+
+## 3.2 Overview
+
+```mermaid
+flowchart TB
+  subgraph clients [Clients]
+    MCPClient[MCP clients<br/>Claude · Cursor · …]
+    RestClient[Future REST clients]
+  end
+
+  subgraph process [optima-mcp]
+    MCP[MCP adapter<br/>stdio · optional streamable HTTP]
+    REST[REST adapter<br/>future]
+    UC[Use-cases<br/>Zod I/O · findings]
+    AE[Analysis engine]
+    SL[Semantic layer<br/>knowledge pack]
+    SC[Schema catalog]
+    GW[SQL gateway<br/>read-only · audit · PII]
+  end
+
+  DB[(SQL Server<br/>live or restored backup)]
+
+  MCPClient --> MCP
+  RestClient -.-> REST
+  MCP --> UC
+  REST -.-> UC
+  UC --> AE
+  UC --> SL
+  SL --> SC
+  AE --> GW
+  SC --> GW
+  GW --> DB
 ```
-MCP client (Claude, ChatGPT, Cursor, Continue, custom agent)
-        │  MCP over stdio | streamable HTTP
-┌───────┴──────────────────────────────────────────────┐
-│ optima-mcp                                           │
-│                                                      │
-│ Tool layer        accounting domain tools            │
-│ Analysis engine   mask expansion, coverage matrix,   │
-│                   rule checks, materiality ranking   │
-│ Semantic layer    knowledge pack (YAML) resolved     │
-│                   against actual schema              │
-│ Schema catalog    introspection, fingerprint, cache  │
-│ SQL gateway       read-only enforcement, params,     │
-│                   timeouts, row caps, PII deny-list, │
-│                   audit log                          │
-└───────┬──────────────────────────────────────────────┘
-        │ TDS, read-only login
-   live SQL Server  |  ephemeral SQL Server (restored backup, optional)
+
+Safety lives in the gateway, version drift in the catalog, Optima knowledge in the semantic layer, analysis in the engine. Adapters stay thin.
+
+## 3.3 Layers
+
+| Layer | Role |
+|---|---|
+| **Adapters** | MCP tools/resources (and later REST routes). Map protocol ↔ use-case; no SQL, no accounting rules. |
+| **Use-cases** | One function per capability. Zod in / findings out. Shared by every transport. |
+| **Analysis engine** | Mask expansion, coverage matrix, rule checks, materiality ranking. Deterministic; uses `Decimal`. |
+| **Semantic layer** | Knowledge pack (YAML) resolved against the live schema. |
+| **Schema catalog** | Introspection, fingerprint, local SQLite cache. |
+| **SQL gateway** | Param queries, read-only proof, timeouts, row caps, PII deny-list, audit log. |
+
+```mermaid
+flowchart LR
+  subgraph adapters [Adapters]
+    T[Tools / routes]
+    R[Resources]
+  end
+  subgraph core [Core — transport-agnostic]
+    U[Use-cases]
+    A[Analysis]
+    S[Semantic + catalog]
+  end
+  G[SQL gateway] --> DB[(SQL Server)]
+  T --> U
+  R --> S
+  U --> A
+  U --> S
+  A --> G
+  S --> G
 ```
 
-Each layer is independently testable. Safety lives in the gateway, version drift in the catalog, Optima knowledge in the semantic layer, and the tool layer stays thin.
+Each layer is independently testable. Adding a REST route is: bind HTTP ↔ existing use-case; do not fork analysis or SQL.
 
-## 3.2 Deployment: local first
+## 3.4 Transports
 
-**Decided:** v1 is **local desktop only** — the server runs on the user's machine next to their MCP client (Claude Desktop, Claude Code, Cursor, Continue), speaking stdio.
+### MCP (v1)
 
-Consequences, all of them simplifying:
+- Official `@modelcontextprotocol/sdk` — do not hand-roll the protocol.
+- **stdio** is the supported transport. Streamable HTTP may ship unimplemented/undocumented until hosted is in scope; same tool surface either way.
+- Tool annotations: `readOnlyHint: true`, `openWorldHint: false` (hints only — enforcement is §3.8).
+- Primary payload: text/Markdown findings. Attach structured content where the client supports it; never require the model to learn a private schema.
+- Neutral descriptions; no vendor names in tool copy.
+- Prefer MCP **resources** for reference material (resolved schema map, knowledge pack) so clients pull on demand.
 
-- **The DB credential never leaves the machine.** No TLS termination, no auth layer, no multi-tenancy, no secret storage service.
-- **We are not a data processor.** No DPA, no data-residency question, no shared-infrastructure risk on a database full of payroll data ([`01`](01-integration-landscape.md)). This is the single largest reason to start local.
-- The SQL Server is reachable directly — either the user's existing Optima instance, or a local one holding a restored backup ([`02`](02-optima-data-model.md) §2.7.1).
-- Audit log is a local file, which is what an auditor wants anyway.
+### REST (extension path)
 
-Streamable HTTP stays in the design (§3.3) because the SDK gives it for free and the tool layer is transport-agnostic, but **hosted deployment is out of scope for v1** and must not drive any v1 decision. Revisit once the tool surface has proven itself.
+Not built in v1. Architecture requirement only:
 
-## 3.3 Vendor neutrality
+- Mount the same use-cases under `/v1/...` (JSON body = Zod schema already used by MCP tools).
+- Reuse gateway, audit log, and findings shape; map findings → JSON (and optionally keep a `text/markdown` representation).
+- Auth, TLS, and multi-tenancy appear only with a network listener — they must not leak into the core or into stdio v1.
 
-- Plain MCP, no client-specific extensions. Target spec revision 2025-06-18 minimum; verify the current revision at build time and negotiate down rather than requiring the newest.
-- **stdio is the v1 transport.** Streamable HTTP is implemented but unsupported/undocumented until hosted deployment is on the table. Same tool surface either way.
-- **No sampling or elicitation in the core path.** Optional protocol features with uneven client support; a tool that requires them breaks on half the ecosystem. Optional UX only, with a working fallback.
-- `readOnlyHint: true`, `openWorldHint: false` on every tool. These are trust hints, not enforcement — enforcement is §3.7 — but they let clients present the server honestly.
-- Output is text/Markdown. Attach structured content where supported, but the primary payload must be readable without a schema the model has to be taught.
-- Neutral tool descriptions, no vendor names.
+## 3.5 Stack
 
-## 3.4 Stack — TypeScript / Node
-
-| Concern | Choice | Notes |
+| Concern | Choice | Why |
 |---|---|---|
-| Runtime | **Node 24 LTS**, TypeScript, ESM | Node 24 gives stable built-in `node:sqlite` and `node:test`, so we can avoid native deps entirely (see cache row). |
-| MCP | **`@modelcontextprotocol/sdk`** | Official TS SDK. Handles both transports, tool annotations, lifecycle. Don't hand-roll the protocol. |
-| Tool schemas | **`zod`** | Already an SDK dependency; JSON Schema is generated from it. |
-| DB driver | **`mssql`** (node-mssql, Tedious driver) | Pure JS — no ODBC system driver, no native build. Meaningful advantage over the Python path: `npx optima-mcp` works with zero system prerequisites. Supports SQL auth, Entra ID, encryption, pooling, per-request timeouts and cancellation. |
-| Decimal handling | **`decimal.js`** + cast in SQL | See §3.5. Non-negotiable. |
-| SQL parsing | **`node-sql-parser`** (`transactsql` dialect) | Used to *prove* a statement is read-only rather than regex-guessing. Belt-and-braces: we generate all SQL ourselves from resolved identifiers anyway. |
-| Local cache | **`node:sqlite`** (built-in) | Schema catalog, resolved knowledge pack, chart-of-accounts snapshots, keyed by schema fingerprint. `better-sqlite3` is the fallback if we need a Node 22 baseline, at the cost of a native build. |
-| Knowledge pack | **`yaml`** | Diffable, reviewable by accounting people who don't write TS. |
-| Tests | **`vitest`** + testcontainers-style SQL Server fixture | Fixture DB is how we regression-test knowledge-pack resolution across Optima versions. |
-| Build / dist | **`tsup`/esbuild** → single bundled ESM CLI | Install friction kills MCP server adoption. `npx optima-mcp` must just work. Docker image as the second option. |
+| Runtime | Node 24 LTS, TS, ESM | Built-in `node:sqlite` / `node:test`; avoid native deps |
+| MCP | `@modelcontextprotocol/sdk` | Official; both transports, annotations, lifecycle |
+| Schemas | `zod` | Shared by MCP tools and future REST; JSON Schema from Zod |
+| DB | `mssql` (Tedious) | Pure JS — `npx` works with no ODBC/system driver |
+| Money | `decimal.js` + SQL `CAST(… AS VARCHAR)` | See §3.6 |
+| SQL proof | `node-sql-parser` (`transactsql`) | Prove read-only; we still generate SQL from resolved IDs |
+| Cache | `node:sqlite` | Catalog + pack cache keyed by schema fingerprint |
+| Knowledge pack | `yaml` | Diffable; reviewable by accountants |
+| Tests | `vitest` + SQL Server fixture | Pack resolution across Optima versions |
+| Dist | `tsup`/esbuild → one ESM CLI | Install friction kills MCP adoption |
 | Package manager | `pnpm` | |
 
-## 3.5 JS-specific hazard: decimals
+Optional later: thin HTTP framework (Hono/Fastify) beside the MCP entrypoint — same process or a second binary sharing `src/core`.
 
-JS `Number` is float64. Tedious returns SQL `DECIMAL`/`NUMERIC`/`MONEY` as `Number`, which silently loses exactness. For accounting output that is a correctness bug, not a rounding nit.
+## 3.6 Decimals
 
-Rules:
+JS `Number` is float64; Tedious returns `DECIMAL`/`MONEY` as `Number`. For accounting that is a correctness bug.
 
-1. **Aggregate in SQL, not in JS.** `SUM()` server-side; bring across totals, not rows to add up. This is also the right call for context economy (§3.9).
-2. **Cast on the way out**: `CAST(SUM(x) AS VARCHAR(40))`, parse into `decimal.js`. Never let a monetary value transit as a JS `Number`.
-3. All arithmetic in the analysis engine (materiality ranking, tie-out residuals, Σ Aktywa − Σ Pasywa) uses `Decimal`.
-4. Format once, at output, with explicit scale.
+1. Aggregate in SQL (`SUM`), not in JS.
+2. Cast out: `CAST(SUM(x) AS VARCHAR(40))` → `decimal.js`. Never transit money as `number`.
+3. Analysis arithmetic uses `Decimal` only.
+4. Format once at output, with explicit scale.
 
-Worth a lint rule and a test that fails on any `number`-typed monetary field.
+Lint + a test that fails on any `number`-typed monetary field.
 
-## 3.6 Connection model and startup
+## 3.7 Connection and startup
 
-Two ways in, both resolved **before** the server starts serving MCP. There is no connect tool and no restore tool — the data source is fixed for the process lifetime.
+Data source is fixed for the process lifetime — no connect/restore tools.
 
 ```
-# A. live connection to an existing Optima database
 npx optima-mcp --profile biuro-klient-abc
-
-# B. restore a backup once, then serve from it   ([`02`] §2.7)
 npx optima-mcp --backup ./CDN_ABC.bac
 npx optima-mcp --backup ./CDN_ABC.bac --sql-server "localhost\OPTIMA"
-
-# helpers
-npx optima-mcp restore ./CDN_ABC.bac    # prewarm: do the slow restore in a terminal
-npx optima-mcp clean                    # drop restored DBs and delete files
+npx optima-mcp restore ./CDN_ABC.bac   # prewarm
+npx optima-mcp clean
 ```
 
-Profile shape:
-
-```
-profile:
-  name        "biuro-klient-abc"
-  server      host,port | named instance
-  auth        SQL login (read-only) | Windows/Kerberos
-  company_db  CDN_ABC
-  config_db   CDN_KNF_Konfiguracja      (optional)
-  encrypt     true (default; trustServerCertificate opt-in for on-prem)
-```
-
-Profiles are configured out of band — env vars or a local config file — and referenced by name. **Connection strings never enter the model context.** Tools take `profile="biuro-klient-abc"`, never a host and password. The model can't leak a credential it never sees.
-
-**Startup failures are loud and terminal.** Unreachable server, wrong collation, over-privileged login, backup that won't restore, engine too old for the backup — all fail at launch with a specific message on stderr, not as a tool error three turns into a conversation.
-
-## 3.7 Read-only enforcement
-
-Five layers, none trusted alone:
-
-1. **DB permissions.** The only actually sufficient control: a login with `db_datareader` plus `DENY SELECT` on personal-data tables, nothing else. Ship the exact `CREATE LOGIN`/`CREATE USER`/`GRANT` script; warn loudly when connected as anything more privileged.
-2. **Connection level.** `ApplicationIntent=ReadOnly` where a readable secondary exists; snapshot isolation or explicit `WITH (NOLOCK)` so we never block a live system. Blocking a month-end close is the fastest route to being uninstalled.
-3. **Statement gate.** Parse with `node-sql-parser`; reject unless a single `SELECT`/CTE. No DML, DDL, `EXEC`, `sp_executesql`, multi-statement batches, or `INTO`.
-4. **Resource limits.** Per-query timeout, row cap, result-size cap, concurrency limit. An LLM will eventually ask for `SELECT * FROM CDN.Dekrety`; decline gracefully and suggest an aggregate.
-5. **Audit log.** Every statement, with profile, timestamp, row count, duration, written locally. Customers will be asked by their auditor what this thing did to the books.
-
-Plus a **PII deny-list** from Comarch's personal-data inventory, applied at the gateway. Denied by default; explicit per-profile opt-in, results pass through redaction.
-
-## 3.8 Output contract
-
-Every tool returns a findings document, not a data dump:
-
-```
-SUMMARY     what was checked, which DB/period, verdict
-FINDINGS    ranked by PLN materiality; each: what's wrong, evidence
-            (accounts, positions, amounts), why it matters, remediation
-NEXT STEPS  which tool to call next, which drill-down
-CAVEATS     unresolved schema concepts, buffer entries in/out, assumptions
+```mermaid
+stateDiagram-v2
+  [*] --> ResolveSource: CLI args
+  ResolveSource --> Connect: --profile
+  ResolveSource --> Restore: --backup
+  Restore --> Connect: DB ready
+  Connect --> Introspect: login + posture checks
+  Introspect --> Serve: fingerprint + pack resolve
+  Serve --> [*]: MCP stdio (or future HTTP)
+  ResolveSource --> Fail: bad args
+  Connect --> Fail: unreachable / over-privileged
+  Restore --> Fail: engine / disk / format
+  Fail --> [*]: stderr, non-zero exit
 ```
 
-Remediation comes in two forms:
+Profiles (env or local config) are referenced by name. **Connection strings never enter model context.** Tools take `profile="…"`, never host/password.
 
-- **UI steps** — default for anything that changes Optima data. "Księgowość → Zestawienia księgowe → Bilans → pozycja B.II.3 → dodaj maskę `4-9-*`." The Optima UI applies business-logic validation we can't replicate, and keeps the customer inside supported behaviour ([`01`](01-integration-landscape.md)).
-- **SQL snippets, `SELECT` only** — verification and drill-down the user can paste into Optima's SQL console or SSMS.
+Startup failures are terminal on stderr: unreachable server, wrong collation, over-privileged login, restore failure, engine too old.
 
-> **Decision needed.** The brief says "SQL snippet user will execute", which could include mutations. I've narrowed it to read-only SQL, with writes as UI steps: emitting `UPDATE` against Optima tables bypasses validation, is the standard way these DBs get corrupted, and would likely void the customer's support arrangement. The value we add is the diagnosis, which is read-only either way. If you want write-SQL, it should be separately gated, clearly labelled and off by default — say so and I'll design it.
+Profile fields: `name`, `server`, `auth` (SQL read-only | Windows/Kerberos), `company_db`, optional `config_db`, `encrypt` (default true; `trustServerCertificate` opt-in).
 
-**Language:** findings use Polish domain terms (plan kont, obroty, salda, zestawienie, gałąź, bufor) regardless of conversation language — those are the words on the screen the user is looking at. Surrounding prose follows the user's language.
+## 3.8 Read-only enforcement
 
-## 3.9 Context economy
+None of these alone is enough:
 
-A real chart of accounts runs to thousands of accounts; `CDN.Dekrety` to millions of rows.
+1. **DB permissions** — `db_datareader` + `DENY SELECT` on personal-data tables. Ship the exact grant script; warn if more privileged.
+2. **Connection** — `ApplicationIntent=ReadOnly` when available; snapshot / `NOLOCK` so we never block month-end.
+3. **Statement gate** — parse with `node-sql-parser`; single `SELECT`/CTE only. No DML/DDL/`EXEC`/batches/`INTO`.
+4. **Resource limits** — timeout, row cap, result-size cap, concurrency.
+5. **Audit log** — every statement locally (profile, time, rows, duration).
 
-- **The model sees findings, not tables.** Aggregation and rule evaluation happen in TS, deterministically. The LLM interprets and prioritises; it doesn't do arithmetic over 5,000 rows.
-- **Progressive disclosure.** Summary → drill-down → detail, each taking an explicit narrowing argument.
-- **Hard caps with honest truncation.** Never silently drop rows. "Showing 20 of 347 findings by PLN impact; narrow with `account_prefix=`."
-- **Cache by fingerprint** so a multi-tool conversation doesn't re-introspect per call.
-- **MCP resources** for reference material (resolved schema map, knowledge pack, account-type conventions) so clients pull on demand instead of us pushing into every result.
+Plus a **PII deny-list** from Comarch’s inventory at the gateway: deny by default; per-profile opt-in with redaction.
+
+## 3.9 Output and context
+
+Every use-case returns a findings document:
+
+```
+SUMMARY     what was checked, DB/period, verdict
+FINDINGS    ranked by PLN materiality; evidence; remediation
+NEXT STEPS  next tool / drill-down
+CAVEATS     unresolved concepts, buffer in/out, assumptions
+```
+
+Remediation:
+
+- **UI steps** (default for changes) — keep the user in supported Optima behaviour ([`01`](01-integration-landscape.md)).
+- **`SELECT`-only SQL** — verification/drill-down for Optima SQL console or SSMS.
+
+> **Decision needed.** Brief said “SQL snippet user will execute” (could mean mutations). Narrowed to read-only SQL + UI steps for writes: emitting `UPDATE` bypasses validation and risks support void. Write-SQL, if wanted, must be separately gated and off by default.
+
+**Language:** Polish domain terms (plan kont, obroty, salda, …) in findings; surrounding prose follows the user.
+
+Context rules:
+
+- Model sees findings, not raw tables — evaluation is deterministic in TS.
+- Progressive disclosure (summary → drill-down → detail).
+- Hard caps; never silent truncation.
+- Cache by schema fingerprint across a session.
+- MCP resources for reference material (and the same payloads for REST `GET` later).
