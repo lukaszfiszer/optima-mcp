@@ -114,6 +114,8 @@ Notes on the backup mode, because they change what you need:
 
 Everything stays local: the backups are mounted read-only, every imported database is set `READ_ONLY` at the engine level, and the container's port is bound to localhost only.
 
+Because an extension user has no terminal, it keeps its own rotating log at `~/.optima-mcp/logs/` — runtime, mode, the `docker` it found, every import decision and tool call, no credentials — and reports the path in the environment report, so "send me that file" is a complete bug report.
+
 ## Stack
 
 TypeScript / Node 22+, `@modelcontextprotocol/sdk`, `mssql` (Tedious). No native dependencies.

@@ -6,6 +6,8 @@ This is the authoritative design for ingestion and packaging; [`06`](06-backup-i
 
 Research date 2026-08. **[unverified]** marks claims not yet exercised against a real install.
 
+Sections §8.4 (PATH) and §8.9 (runtime) were revised 2026-08-08 after reading the MCPB specs and the shipped Claude Desktop bundle — see §8.13 for what was established and how.
+
 ## 8.1 The requirement
 
 Two configuration modes, exactly one active per installation:
@@ -91,7 +93,12 @@ Configuration errors surface differently than in a CLI: an MCPB user sees a dead
 
 Any Docker-API-compatible CLI: Docker Desktop, Colima (used in [`07`](07-spike-0-findings.md)), Rancher Desktop, Podman via `podman` with the Docker CLI shim.
 
-**The PATH problem is the first real obstacle, not the last.** GUI-launched applications on macOS inherit a minimal `PATH` — typically no `/usr/local/bin`, no `/opt/homebrew/bin` — so an MCP server spawned by Claude Desktop cannot assume `docker` resolves **[unverified for the current Claude Desktop build; must be tested first, it gates the whole mode]**. Probe explicitly, in order:
+**The PATH problem is smaller than it looked, but the probe stays.** GUI-launched applications on macOS inherit a minimal `PATH` — typically no `/usr/local/bin`, no `/opt/homebrew/bin` — which would leave a bundled server unable to resolve `docker` at all. Reading the shipped Claude Desktop bundle (§8.12) shows the host already mitigates this in two layers:
+
+1. **Login-shell environment extraction.** A separate utility process (`shellPathWorker.js`) runs the user's login shell and reports its environment back; the main process merges the result into its own `process.env`, so children inherit a terminal-parity `PATH` rather than the launchd stub. It has a 5-second timeout and a retry budget, and **falls back to the bare process environment on failure** — the failure path is real, just uncommon.
+2. **A `PATH` floor** appended on top when entries are missing: `/opt/homebrew/bin`, `/usr/local/bin`, `/opt/local/bin`, `~/.nvm/versions/node/*/bin`, `~/.orbstack/bin`, `~/.rd/bin`, `~/.local/bin`, `~/.volta/bin`, mise/asdf/pyenv shims, Nix profiles, `/usr/bin`. That OrbStack and Rancher Desktop appear by name is direct evidence container CLIs are expected to resolve here.
+
+So `docker` very likely resolves without help, and Colima (the `07` setup) lands in `/usr/local/bin` or `/opt/homebrew/bin` — in the floor either way. **The explicit ladder below is still required**: it costs almost nothing, and it covers the extraction-failure fallback, Docker Desktop's own install path, and Windows, none of which the floor addresses. What changes is sequencing — this is no longer a mode-killing unknown, so §8.11 item 2 no longer blocks item 3. Probe in order:
 
 ```
 $OPTIMA_DOCKER (escape hatch)
@@ -216,9 +223,34 @@ Mode B changes the read-only story of [`03`](03-architecture.md) §3.7 in one re
 
 ## 8.9 Packaging
 
-- `manifest.json` (manifest_version `0.3`), `server/` with the bundled entry point, `node_modules` installed `--production`, icon, `mcpb pack` → one `.mcpb` file. `mcpb validate` in CI on every commit; a manifest that fails validation is a broken release the CI can catch for free.
-- `compatibility.platforms`: `darwin`, `win32`, `linux`. `compatibility.runtimes.node`: the floor we actually test, **not** `>=24` — the host provides Node, so the bundle must run on what Claude Desktop ships. Verify at startup and fail with a version message rather than a stack trace **[unverified: which Node version current Claude Desktop provides — check before choosing the floor; it also decides §8.5's state store]**.
+- `manifest.json`, `server/` with the bundled entry point, `node_modules` installed `--production`, icon, `mcpb pack` → one `.mcpb` file. `mcpb validate` in CI on every commit; a manifest that fails validation is a broken release the CI can catch for free.
+- **`manifest_version`: `0.3`** — the version the spec declares current (last updated 2025-12-02). Note the spec's own `uv` example uses `0.4`, and Claude Desktop sends `x-mcpb-manifest-version: 0.4` when querying the extension registry, so `0.4` exists in practice ahead of the written spec. Stay on `0.3`: we use no field that requires more, and `mcpb validate` is the arbiter.
+- `compatibility.platforms`: `darwin`, `win32`, `linux`.
+
+### `compatibility.runtimes.node` is an execution-model switch, not a compatibility assertion
+
+**Decided: declare no `runtimes.node`, and check the runtime ourselves at startup.**
+
+There is no `node` binary inside Claude.app. "Node.js ships with Claude" means Electron's *embedded* Node: a `type: "node"` server whose `command` is `node` with a script in `args[0]` is run in an Electron **`utilityProcess`**, and the built-in version is that Electron build's `process.versions.node`. What the host does with our declared range (§8.13):
+
+| Declared | Built-in satisfies it | Result |
+|---|---|---|
+| nothing | — | **built-in node**, always |
+| a range | yes | built-in node |
+| a range | no | **searches the machine for a system Node**, takes the first install matching the range, else the highest found; only with no system Node at all does it fall back to built-in |
+
+So a floor the built-in doesn't clear does not produce a clean "unsupported" error — it silently moves us out of the host's runtime and onto whatever Node the user happens to have, chosen by the host, with no signal in the UI. That is a worse failure than the one the floor was meant to prevent, and it makes the runtime a property of the user's machine instead of the bundle.
+
+Declaring nothing pins us to the built-in in every case, which is the one runtime we can actually test against. Verify the version in our own startup path, report it in the environment report and the log banner (§8.12), and fail with the message in §8.10 if it is genuinely too old.
+
+Consequences to carry:
+
+- **`process.execPath` is Claude, not `node`.** Nothing may re-spawn the server by `execPath`. Spawning `docker` is unaffected.
+- **§8.5's `state.json` decision is reinforced.** `node:sqlite` availability tracks Electron's Node, which is not a version we choose — the schema cache's degrade-to-in-memory path is the only safe posture.
 - Bundle a single esbuild output plus a minimal `node_modules` ([`03`](03-architecture.md) §3.4 already targets a bundled ESM CLI), so the `.mcpb` stays small and the dependency surface auditable.
+
+Remaining packaging notes:
+
 - Signing: `mcpb sign` / `verify` exist; unsigned bundles install with a warning. Sign before any distribution outside the repo **[unverified: exact host UX for unsigned bundles]**.
 - `npx optima-mcp` stays supported as the developer and CI entry point ([`06`](06-backup-ingestion-setup.md) §6.2). The bundle is packaging over the same server, not a second implementation.
 
@@ -248,21 +280,95 @@ Mode A first — it is the Phase 1 skeleton reached through a config UI, so it v
 
 | # | Item | Done when |
 |---|---|---|
-| 1 | Manifest, `user_config`, packaging, `mcpb validate` in CI | Installing the `.mcpb`, pasting a server URL into the UI, and getting an environment report — no JSON edited |
-| 2 | Docker discovery + probe, incl. the GUI-PATH question (§8.4) | We know on macOS and Windows whether a bundled server can reach Docker at all. **Do this before item 3** — a negative result reshapes mode B |
+| 0 | Log file, levels, rotation, startup banner (§8.12) | Every later item is debuggable from a file the user can send. **First, because it is how items 1–2 get answered on a real machine** |
+| 1 | Manifest, `user_config`, packaging, `mcpb validate` in CI | Installing the `.mcpb`, pasting a server URL into the UI, and getting an environment report — no JSON edited. The banner confirms §8.9's runtime branch against a real install |
+| 2 | Docker discovery + probe (§8.4) | The banner names a `docker` path and a live daemon on macOS and Windows. No longer gates item 3 — §8.4 establishes the host supplies a usable `PATH` — but the ladder still ships |
 | 3 | Container lifecycle: create/reuse/start/stop, volume, port, collation guard | A container comes up with the right collation and survives a restart |
 | 4 | Scan + fingerprint + registry (§8.5), no restore yet | Correct import/skip decisions reported for a folder of backups |
 | 5 | Import worker: preflight, restore, verify, `SET READ_ONLY`, read-only login | A folder of backups becomes N read-only databases |
 | 6 | Async serving: source states, progress, refusal-with-progress (§8.6) | Cold start on a 20 GB backup is a visible import, not a dead extension |
 | 7 | `database` argument and multi-source reporting (§8.7) | Two companies in one folder are both reachable, unambiguously |
 | 8 | Disclosure, disk reporting, `clean` (§8.8) | The user can see what was copied where, and remove it |
+| 9 | Log path in the environment report, redaction pass (§8.12) | Asked "why isn't this working", the agent names the file to send — and it contains no credentials |
 
 Independent of Phase 2/3 accounting work ([`05`](05-roadmap-and-open-questions.md) §5.2) and of the still-open mask spike — this is ingestion and packaging, not schema.
+
+## 8.12 Diagnostics and logging
+
+**Requirement: the extension must be debuggable from inside Claude Desktop, by someone with no terminal, on a machine we do not have.** Everything Phase 1 could diagnose by reading stderr in a terminal has to be recoverable from a file the user can find and send us.
+
+This is not a nicety. Under MCPB, three of the things most likely to go wrong are invisible by construction: which Node the host chose (§8.9 — four possible branches), what `PATH` the process actually received (§8.4 — extraction, floor, or fallback), and what happened during an import that takes 40 minutes behind the serving boundary (§8.6). A user reporting "it doesn't work" cannot answer any of those, and neither can we.
+
+### Our own log file, not the host's
+
+Write to `~/.optima-mcp/logs/optima-mcp-<date>.log`, alongside the audit log ([`03`](03-architecture.md) §3.7) — **in addition to** stderr, never instead of it.
+
+Claude Desktop captures server stderr to `~/Library/Logs/Claude/mcp-server-<name>.log` (`%APPDATA%\Claude\logs\` on Windows), and that stays the first thing to ask for. But it is the host's mechanism, not ours: it is undocumented, it has changed before, and a `utilityProcess`-hosted server (§8.9) is not a spawned child, so **whether its stderr lands in that file at all is [unverified — confirm on the first real install]**. A log path we own is the one artifact we can be sure exists and can name in a support reply.
+
+- Rotate by day, keep 7 files, cap each at 10 MB. An import worker logging progress is chatty, and this must never fill a disk.
+- `OPTIMA_LOG_LEVEL` (`error|warn|info|debug`, default `info`) — `debug` is what we ask a tester to set. Undocumented in the UI, like the other env escape hatches (§8.2).
+- One line per event, timestamped, levelled, with a stable event name. Plain text over JSON: the reader is a human pasting it into an issue.
+
+### The startup banner
+
+The single most valuable thing in the file. One block, every launch, at `info`, before anything can fail:
+
+```
+optima-mcp <version>  build <git sha>
+runtime   node <process.versions.node>  electron=<yes|no>  execPath=<path>
+platform  darwin arm64  (emulation: n/a)
+mode      B — backups         config source: user_config
+dirs      /Users/x/Kopie  (2 files: *.bac)
+docker    /opt/homebrew/bin/docker  (found via: PATH)  daemon: ok  27.3.1
+state     ~/.optima-mcp/state.json   log: ~/.optima-mcp/logs/optima-mcp-2026-08-08.log
+```
+
+`electron=yes` (inferred from `process.versions.electron` / `execPath` not being a `node` binary) is what tells us instantly which §8.9 branch fired. **Log the resolved `PATH` at `debug`** — it is the whole of §8.4's uncertainty in one line — but not at `info`, since it is long and can carry directory names from the user's machine.
+
+### What must be logged
+
+| Event | Level | Why |
+|---|---|---|
+| Startup banner | info | Answers §8.9 and §8.4 without a round trip |
+| Docker probe: every candidate path tried, which hit, `docker info` outcome | debug / info on failure | The failure mode we cannot reproduce remotely |
+| Every `docker` invocation: argv, exit code, duration, stderr tail | debug | Container lifecycle bugs are argv bugs |
+| Container decision: reuse / start / create, and why (name, image, collation match) | info | §8.4's guard is invisible otherwise |
+| Per source: fingerprint, registry decision (up-to-date / changed / new / missing DB) | info | §8.5's whole contract in one line per file |
+| Preflight results: `HEADERONLY` version, `FILELISTONLY` sizes, free space | info | Turns a skip into an explained skip |
+| Restore progress ticks | debug | Chatty by nature; `info` gets start and finish only |
+| State transition per source (`queued → … → ready\|failed\|skipped`) | info | Reconstructs a 40-minute import after the fact |
+| Every tool call: name, `database` argument, duration, row count, outcome | info | Pairs with the audit log; shows refusals-with-progress actually firing |
+| Configuration errors (§8.3) | error | These do not exit the process, so the log is the only record |
+
+### Redaction, and the environment report
+
+Never logged, at any level: the connection string, the generated `sa` password, any query result row. The `PATH` and the configured directory paths are `debug`-only. This is the same rule as [`03`](03-architecture.md) §3.7 — credentials never enter the model context, and they must not enter a file a user pastes into a public issue either.
+
+**`optima_describe_environment` reports the log file's path**, so an agent asked "why isn't this working" can tell the user exactly which file to send. Same reasoning as §8.6 making it the progress UI: one tool the model already calls, rather than a diagnostics tool that competes with it.
+
+## 8.13 How the host behaviour in §8.4 and §8.9 was established
+
+Recorded because the conclusions are load-bearing and the sources are not documentation.
+
+The MCPB specs answer neither question. `README.md` says only *"Node.js ships with Claude for macOS and Windows"* — no version, no mechanism — and [modelcontextprotocol/mcpb#89](https://github.com/modelcontextprotocol/mcpb/issues/89) is an open request that Anthropic document exactly this. `MANIFEST.md` describes `compatibility.runtimes.node` as a requirement without saying what a host does when it is not met. Neither document mentions the child process's environment or `PATH` at all.
+
+So both were read out of the shipped application: Claude Desktop **1.26832.0** on macOS, `Contents/Resources/app.asar` unpacked with `@electron/asar` and the main-process bundle read directly. That yielded the `utilityProcess` runtime-selection ladder in §8.9, the login-shell extractor and `PATH` floor in §8.4, and the `x-mcpb-manifest-version: 0.4` header in §8.9.
+
+Two caveats on that evidence:
+
+1. **It is one build on one platform.** Minified internals are not an API and can change without notice. Everything here should be re-confirmed against the log banner (§8.12) on the first real install, and nothing in the design may *depend* on the internals — §8.4's probe ladder and §8.9's "declare nothing" both hold regardless of what the host does.
+2. **The `PATH` floor was confirmed on the Claude-Code-in-Desktop spawn path**; that the extension spawn path shares it was not traced to the end. Treated as likely, not certain — which is why the probe ladder stays.
+
+Also noted: the repository has moved from `anthropics/mcpb` to `modelcontextprotocol/mcpb`.
 
 ## Sources
 
 - [MCPB manifest specification](https://github.com/anthropics/mcpb/blob/main/MANIFEST.md) — `user_config` types, `directory` + `multiple`, `sensitive`, `${user_config.*}` substitution, `compatibility.runtimes`
-- [MCPB CLI and bundling](https://github.com/anthropics/mcpb/blob/main/README.md) — `init`/`validate`/`pack`/`sign`, `node_modules --production`
+- [MCPB README](https://github.com/anthropics/mcpb/blob/main/README.md) — bundle layout, "Node.js ships with Claude for macOS and Windows", `node_modules --production`
+- [MCPB CLI](https://github.com/anthropics/mcpb/blob/main/CLI.md) — `init`/`validate`/`pack`/`sign`/`verify`/`info`/`unsign`, `.mcpbignore`, PKCS#7 signature format
+- [MCPB examples](https://github.com/anthropics/mcpb/tree/main/examples) — `hello-world-node` (all `user_config` types), `file-system-node` (`directory` + `multiple: true` expanding into args)
+- [mcpb#89 — runtime policy is undocumented](https://github.com/modelcontextprotocol/mcpb/issues/89) — open request for the Node version and delivery mechanism; why §8.9 was settled empirically
+- Claude Desktop 1.26832.0 (macOS), `Contents/Resources/app.asar` — the `utilityProcess` runtime ladder (§8.9) and the login-shell `PATH` extraction and floor (§8.4). Not documentation; see §8.13
 - [Adopting the MCP Bundle format (.mcpb)](https://blog.modelcontextprotocol.io/posts/2025-11-20-adopting-mcpb/) — which clients implement it
 - [Configure environment variables for SQL Server on Linux — Microsoft Learn](https://learn.microsoft.com/en-us/sql/linux/sql-server-linux-configure-environment-variables?view=sql-server-ver17) — `MSSQL_COLLATION`, `MSSQL_PID` values for the 2025 images (no `Developer`), `MSSQL_MEMORY_LIMIT_MB`
 - [Docker: run containers for SQL Server on Linux — Microsoft Learn](https://learn.microsoft.com/en-us/sql/linux/quickstart-install-connect-docker?view=sql-server-ver17)

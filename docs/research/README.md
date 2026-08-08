@@ -13,7 +13,7 @@ Research date 2026-08. Claims carry confidence labels; **[unverified]** items mu
 | [05 — Roadmap](05-roadmap-and-open-questions.md) | Four blocking spikes, phases, risks, decisions needed |
 | [06 — Backup ingestion setup](06-backup-ingestion-setup.md) | Why a browser page can't pick the backup and a native picker must, entry points, why the restore is preflighted, on-disk state |
 | [07 — Spike 0 findings](07-spike-0-findings.md) | Empirical run against a real backup: `.bac` is a renamed `.bak`, real schema, `Acc_*` settled, zestawienia tables found, definitions are readable text |
-| [08 — MCPB extension](08-mcpb-extension.md) | **Current deliverable.** Config UI (folder of backups \| SQL server URL), managed SQL Server container, scan/fingerprint/background import, multi-database tool surface, packaging, failure messages |
+| [08 — MCPB extension](08-mcpb-extension.md) | **Current deliverable.** Config UI (folder of backups \| SQL server URL), managed SQL Server container, scan/fingerprint/background import, multi-database tool surface, packaging, failure messages, diagnostic logging |
 
 ## Summary
 
@@ -38,6 +38,8 @@ a SQL Server URL                             → live read-only connection
 
 No open-source engine can restore a `.bak` (Babelfish is protocol-compatible, not storage-compatible; OrcaMDF is abandoned), so the target is Microsoft SQL Server — by default an **Express container we manage**, free for production use and capped at 50 GB; the user's own instance is the escape hatch above that.
 
-**The install is an MCPB bundle** — the user picks a folder in a native dialog and never opens a terminal or edits JSON. Three things follow from that ([08](08-mcpb-extension.md)): a directory means several company databases served at once, several multi-GB restores can't fit in a startup timeout so the import runs behind the serving boundary with reported progress, and a container runtime becomes a hard dependency of the backup mode.
+**The install is an MCPB bundle** — the user picks a folder in a native dialog and never opens a terminal or edits JSON. Three things follow from that ([08](08-mcpb-extension.md)): a directory means several company databases served at once, several multi-GB restores can't fit in a startup timeout so the import runs behind the serving boundary with reported progress, and a container runtime becomes a hard dependency of the backup mode. A fourth follows from the user having no terminal: the extension keeps its own rotating log file, with a startup banner naming the runtime, the resolved `docker`, and the mode, because that is the only way to debug an install on a machine we can't see ([08](08-mcpb-extension.md) §8.12).
+
+The host runs a bundled `type: "node"` server in an Electron `utilityProcess` on its own embedded Node, so we declare no `compatibility.runtimes.node` — a floor it doesn't satisfy makes it silently fall back to a system Node instead ([08](08-mcpb-extension.md) §8.9, §8.13).
 
 **Status:** Phase 1 skeleton delivered (live connection, `optima_describe_environment`). Phase 2 is the extension. Spikes S1–S4 are answered empirically ([07](07-spike-0-findings.md)); the mask-wildcard alphabet is the one open spike and needs a second real DB whose zestawienia actually use masks.
