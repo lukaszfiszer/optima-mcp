@@ -48,16 +48,16 @@ This lets us infer the relational graph mechanically — match `X_YyyId` columns
 
 | Concept | Table | Conf. | Notes |
 |---|---|---|---|
-| Plan kont | `CDN.Konta` | likely | Column prefix disputed: one source says `Acc_*`, another `Kto_*`. Must be settled by introspection. Holds number, name, type (aktywa/pasywa/aktywa-pasywa/przychody/koszty/pozabilansowe), rozrachunkowe flag, dictionary binding, parent link, period FK. |
+| Plan kont | `CDN.Konta` | **confirmed** | Prefix is `Acc_*` — settled by introspection ([`07`](07-spike-0-findings.md) §S1), the `Kto_*` source was wrong. Holds number (`Acc_Numer`), name, type (`Acc_TypKonta`), rozrachunkowe flag, dictionary binding, parent link (`Acc_ParId`). No period FK column — period continuity is a forward-linked chain (`Acc_PrevAccId`/`Acc_NextAccId`), not a shared table with a period key. |
 | Dzienniki | `CDN.Dzienniki` | likely | Period-scoped. |
 | Entry header | `CDN.DekretyNag` | confirmed | `DeN_DeNId`, `DeN_Dziennik`, `DeN_NrKsiegi`, `DeN_Bufor` (buffer vs booked — critical filter), `DeN_DataDok`. |
-| Entry lines | `CDN.Dekrety` | confirmed | Wn/Ma account, amounts, currency. Fact table for all balances. |
-| Source doc link | `CDN.Zrodla` | likely | Documented chain `CDN.Konta → CDN.Dekrety → CDN.Zrodla → <doc>`. |
+| Entry lines | `CDN.DekretyKonta` | **confirmed** | Not `CDN.Dekrety` (doesn't exist) — real table is `CDN.DekretyKonta`, prefix `DeK_*`: `DeK_DeNId` (→ header), `DeK_AccId` (→ Konta), `DeK_Strona` (Wn/Ma), `DeK_Kwota`, `DeK_KwotaWal`, `DeK_Bufor`. `CDN.DekretyElem` also exists, uncharacterised. See [`07`](07-spike-0-findings.md). |
+| Source doc link | unknown | **unverified** | `CDN.Zrodla` does not exist in the real schema — the documented chain was wrong. Needs re-deriving from real table names. |
 | VAT register header | `CDN.VatNag` | likely | `VaN_DekId = DeN_DeNId`. |
-| Zestawienie header | unknown | **unverified** | Name not established. Candidates `CDN.ZestKsieg*`, `CDN.Zestawienia*`. Must be discovered. |
-| Zestawienie positions | unknown | **unverified** | Position tree (gałęzie) + definition text per position. |
-| Account ↔ position link | unknown | **unverified** | Optima's UI has a per-account "Zestawienia Księgowe" tab, implying either an explicit link table or resolution through masks on the position. Which one determines the design of the reconcile tool (§2.5). Highest-value single discovery. |
-| Obroty i salda | — | confirmed as feature | UI: *Księgowość → Obroty i salda*. Whether materialised or computed is unknown. Assume computed; compute ourselves from `CDN.Dekrety` rather than depend on a cache we don't control. |
+| Zestawienie header | `CDN.ZestKsiNag` | **confirmed** | Prefix `ZKN_*`. Carries `ZKN_Bufor` directly on the header. Found and verified in [`07`](07-spike-0-findings.md) §S1. |
+| Zestawienie positions | `CDN.ZestKsiPoz` | **confirmed** | Prefix `ZKP_*`. Position tree (`ZKP_Poziom`, `ZKP_Lisc`) + `ZKP_Definicja nvarchar(4000)` — readable formula text, not a blob. |
+| Account ↔ position link | `CDN.ZestawieniaKonta` | **confirmed** | Prefix `ZKa_*`. Explicit link table: `ZKa_AccId` → `Konta.Acc_AccId`, `ZKa_ZKNId` → header, `ZKa_ZKPId` → position, `ZKa_Funkcja` → which account-function this row feeds. Highest-value discovery from Spike 0 — see [`07`](07-spike-0-findings.md) §S3 for the open question of whether it's authoritative or a cache. |
+| Obroty i salda | — | confirmed as feature | UI: *Księgowość → Obroty i salda*. Whether materialised or computed is unknown. Assume computed; compute ourselves from `CDN.DekretyKonta` rather than depend on a cache we don't control. |
 | Personal data | `CDN.PracEtaty`, `CDN.Kontrahenci` | confirmed | Deny-list by default. |
 
 Trade documents are out of v1 scope. One source describes `CDN.TraNag` discriminated by `trn_gidtyp`, but `GidTyp` is ERP XL terminology and may be a cross-product conflation — **[unverified]**, irrelevant until we go beyond accounting.
@@ -68,10 +68,12 @@ A zestawienie is a user-definable financial statement (Bilans, RZiS, Cash Flow, 
 
 A definition can contain **[confirmed]**:
 
-- **Account functions**: `@Saldo`, `@SaldoWn`, `@SaldoMa`, `@Obroty`, `@ObrotyWn`, `@ObrotyMa`. Optima defaults these by account type — Bilans position on aktywa/aktywa-pasywa → `@SaldoWn`; RZiS position on koszty → `@ObrotyWn`. That default is the invariant our function/type check enforces.
-- **Account masks**, including an exclusion mode ("bez kont wskazanych w masce"). Wildcard alphabet (`*`, `?`, ranges) is **[unverified]**, must be determined empirically.
-- **Account ranges** ("konto od / konto do").
-- Arithmetic and logical operators, references to other positions, system functions, raw SQL.
+- **Account functions**: `@Saldo`, `@SaldoWn`, `@SaldoMa`, `@Obroty`, `@ObrotyWn`, `@ObrotyMa`, plus `@PrzyrostSalda` and `@PerSaldo` observed in a sample backup but not previously documented ([`07`](07-spike-0-findings.md) §S2). Optima defaults these by account type — Bilans position on aktywa/aktywa-pasywa → `@SaldoWn`; RZiS position on koszty → `@ObrotyWn`. That default is the invariant our function/type check enforces.
+- **Cross-statement references**: `@Zestawienie(SYMBOL, position_no)` — a position can reference a position in a *different* statement by symbol, not just within its own tree. Confirmed in a real formula: `@Zestawienie(R_POD_BIL, 7)`.
+- **Conditional logic**: `CHOOSE(condition, a, b)` observed in real formulas — the grammar has branching, not just arithmetic.
+- **Account masks**, including an exclusion mode ("bez kont wskazanych w masce"). Wildcard alphabet (`*`, `?`, ranges) is **[still unverified]** — the sample backup checked in Spike 0 uses zero masks (all 1,003 non-empty position definitions use direct function-call references instead, backed by the explicit `ZestawieniaKonta` link table). Need a second sample DB where masks are actually configured. See [`07`](07-spike-0-findings.md).
+- **Account ranges** ("konto od / konto do") — likewise unobserved in the one DB checked so far.
+- Arithmetic and logical operators (note: **decimal literals use a comma**, e.g. `*0,19`, not a dot), references to other positions, system functions, raw SQL.
 
 ### Why this is the flagship
 
@@ -87,7 +89,7 @@ Expanding every mask and range against the *actual* chart of accounts for the pe
 
 Findings rank by PLN materiality.
 
-**Open risk:** if position definitions are stored as an opaque/serialised blob rather than text, we need to reverse-engineer that format instead of writing a grammar. Spike S2 ([`05`](05-roadmap-and-open-questions.md) §5.1) settles this; everything in the flagship depends on it.
+**Resolved:** definitions are stored as readable text in `ZKP_Definicja nvarchar(4000)`, not an opaque blob. Spike S2 ([`07`](07-spike-0-findings.md)) settles this — grammar it is, not reverse-engineering.
 
 ## 2.6 The schema problem
 
@@ -125,7 +127,7 @@ npx optima-mcp --backup ./CDN_ABC.bac
 npx optima-mcp --profile biuro-klient-abc          # live connection instead
 ```
 
-**Format.** Optima accepts `.bac` and `.bak` for restore **[confirmed]**. `.bak` is a standard SQL Server backup. Whether `.bac` is a renamed `.bak`, a compressed container, or a multi-DB archive (config + company) is **[unverified]** — spike S4.
+**Format.** Optima accepts `.bac` and `.bak` for restore **[confirmed]**. `.bac` **is** a renamed `.bak` — `RESTORE HEADERONLY`/`RESTORE DATABASE` work directly against it, no unwrap step. It's compressed with SQL Server's own native `MS_XPRESS` backup compression (not a Comarch-specific container). Settled empirically in [`07`](07-spike-0-findings.md) §S4.
 
 ### Startup sequence
 
@@ -133,8 +135,7 @@ npx optima-mcp --profile biuro-klient-abc          # live connection instead
 --backup <path>
   → fingerprint file (size + mtime + hash)
   → already restored under this fingerprint? → skip to connect
-  → detect container format, unwrap if needed
-  → RESTORE HEADERONLY / FILELISTONLY (metadata, no commit)
+  → RESTORE HEADERONLY / FILELISTONLY (metadata, no commit — .bac needs no unwrap, see §2.7 Format)
   → ensure target engine reachable (§2.7.1)
   → RESTORE DATABASE ... WITH MOVE, RECOVERY
   → record fingerprint → DB name in local state

@@ -4,16 +4,16 @@
 
 Four unknowns dominate risk. Each is a bounded investigation against one real Optima DB. Each can invalidate a design choice above. Do them first.
 
-| # | Spike | Blocks |
-|---|---|---|
-| **S1** | Dump the real accounting schema. Introspect `CDN.*`. Settle the `CDN.Konta` column prefix (`Acc_*` vs `Kto_*` — sources conflict) and find the **zestawienie header / position / link tables**, whose names research couldn't establish at all. | Everything in the flagship |
-| **S2** | How are position definitions stored — readable text or opaque blob? | Small grammar vs reverse-engineering a format. Biggest effort swing in the project. |
-| **S3** | How do accounts attach to positions — explicit link table, or resolved from masks on the position? | Entire design of the coverage matrix ([`02`](02-optima-data-model.md) §2.5) |
-| **S4** | What is `.bac` — renamed `.bak`, compressed container, or multi-DB archive? | Whether startup ingestion is `RESTORE` or `RESTORE` + unwrap ([`02`](02-optima-data-model.md) §2.7) |
+| # | Spike | Status | Blocks |
+|---|---|---|---|
+| **S1** | Dump the real accounting schema. Introspect `CDN.*`. Settle the `CDN.Konta` column prefix (`Acc_*` vs `Kto_*` — sources conflict) and find the **zestawienie header / position / link tables**, whose names research couldn't establish at all. | **Done** — [`07`](07-spike-0-findings.md) | Everything in the flagship |
+| **S2** | How are position definitions stored — readable text or opaque blob? | **Done — readable text** ([`07`](07-spike-0-findings.md)) | Small grammar vs reverse-engineering a format. Biggest effort swing in the project. |
+| **S3** | How do accounts attach to positions — explicit link table, or resolved from masks on the position? | **Done — explicit link table** (`CDN.ZestawieniaKonta`), open question on whether it's authoritative or a cache ([`07`](07-spike-0-findings.md)) | Entire design of the coverage matrix ([`02`](02-optima-data-model.md) §2.5) |
+| **S4** | What is `.bac` — renamed `.bak`, compressed container, or multi-DB archive? | **Done — renamed `.bak`**, `MS_XPRESS`-compressed, no unwrap step ([`07`](07-spike-0-findings.md)) | Whether startup ingestion is `RESTORE` or `RESTORE` + unwrap ([`02`](02-optima-data-model.md) §2.7) — resolved, plain `RESTORE` |
 
-Also worth an hour: pin down the mask wildcard alphabet empirically (`*`, `?`, ranges, exclusion mode). Mask expansion is the core primitive and has to be exact.
+Mask wildcard alphabet (`*`, `?`, ranges, exclusion mode) is **still open** — the sample backup run through Spike 0 uses zero masks in its zestawienia (all direct function-call references). Need a second, more complex sample DB to observe real mask usage. Mask expansion is the core primitive and has to be exact.
 
-**Access requirement:** all four need a real Optima install with Księga Handlowa and a populated chart of accounts. Securing that — partner sandbox, demo DB, or a friendly accounting office — is the critical path for the whole project. Start on it now, in parallel with everything else.
+**Access requirement:** the mask spike still needs a second real Optima install with Księga Handlowa and a chart of accounts that actually uses masks/ranges in its zestawienia. Securing that — partner sandbox, demo DB, or a friendly accounting office — is now the critical path.
 
 ## 5.2 Phases
 
@@ -61,4 +61,4 @@ Phase 1 doesn't depend on any spike and can be built in parallel with securing D
 
 ## 5.5 Next
 
-Fastest de-risking: get one real Optima DB with Księga Handlowa data and run S1–S3 in a single sitting. Those three answers convert most of this document from proposed to specified. Build Phase 1 in parallel — it depends on none of them.
+~~Fastest de-risking: get one real Optima DB with Księga Handlowa data and run S1–S3 in a single sitting.~~ Done — see [`07`](07-spike-0-findings.md). Remaining de-risking: a **second** sample backup to observe actual mask/range usage in zestawienia (the one sampled so far uses none), and to check whether the S1 corrections (`DekretyKonta` not `Dekrety`, missing `Zrodla`) generalise or were specific to that install. Build Phase 1 in parallel — it depends on none of them.

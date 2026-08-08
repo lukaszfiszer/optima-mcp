@@ -141,3 +141,7 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Real Optima backups — customer data, never commit (docs/research/07-spike-0-findings.md)
+*.bac
+*.bak
