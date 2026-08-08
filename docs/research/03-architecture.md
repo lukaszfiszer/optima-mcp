@@ -2,27 +2,40 @@
 
 ## 3.1 Layers
 
-```
-MCP client (Claude, ChatGPT, Cursor, Continue, custom agent)
-        │  MCP over stdio | streamable HTTP
-┌───────┴──────────────────────────────────────────────┐
-│ optima-mcp                                           │
-│                                                      │
-│ Tool layer        accounting domain tools            │
-│ Analysis engine   mask expansion, coverage matrix,   │
-│                   rule checks, materiality ranking   │
-│ Semantic layer    knowledge pack (YAML) resolved     │
-│                   against actual schema              │
-│ Schema catalog    introspection, fingerprint, cache  │
-│ SQL gateway       read-only enforcement, params,     │
-│                   timeouts, row caps, PII deny-list, │
-│                   audit log                          │
-└───────┬──────────────────────────────────────────────┘
-        │ TDS, read-only login
-   live SQL Server  |  ephemeral SQL Server (restored backup, optional)
+```mermaid
+flowchart TB
+    MCPClient["MCP client\n(Claude, ChatGPT, Cursor, Continue, custom agent)"]
+    RESTClient["REST client\n(future, out of scope for v1)"]
+
+    subgraph Adapters["Protocol adapters — thin, per-transport"]
+        MCPAdapter["MCP tool handlers\nzod schemas, JSON-RPC"]
+        RESTAdapter["REST controllers\n(future)"]
+    end
+
+    subgraph Core["optima-mcp core — shared, transport-agnostic"]
+        Service["Service layer\nfindings-doc assembly (SUMMARY / FINDINGS / NEXT STEPS / CAVEATS)"]
+        Analysis["Analysis engine\nmask expansion, coverage matrix,\nrule checks, materiality ranking"]
+        Domain["Domain layer\nknowledge pack (YAML) resolved\nagainst actual schema"]
+        Catalog["Schema catalog\nintrospection, fingerprint, cache"]
+        Gateway["SQL gateway\nread-only enforcement, params,\ntimeouts, row caps, PII deny-list, audit log"]
+    end
+
+    DB["live SQL Server | ephemeral SQL Server (restored backup, optional)"]
+
+    MCPClient -->|"MCP over stdio | streamable HTTP"| MCPAdapter
+    RESTClient -.->|"HTTP/JSON (future)"| RESTAdapter
+    MCPAdapter --> Service
+    RESTAdapter -.-> Service
+    Service --> Analysis
+    Analysis --> Domain
+    Domain --> Catalog
+    Catalog --> Gateway
+    Gateway -->|"TDS, read-only login"| DB
 ```
 
-Each layer is independently testable. Safety lives in the gateway, version drift in the catalog, Optima knowledge in the semantic layer, and the tool layer stays thin.
+Each layer is independently testable. Safety lives in the gateway, version drift in the catalog, Optima knowledge in the domain layer, and the protocol adapters stay thin.
+
+The **service layer** is the seam for the REST future stated in §3.2/§3.3: it holds the actual tool logic (calling the analysis engine, assembling the findings document) with no MCP types in it. An MCP tool handler and a future REST controller both call the same service functions and only differ in how they parse input and serialize output. Nothing here ships for v1 beyond writing the v1 MCP handlers as thin wrappers over service functions from the start, so there is no rewrite when REST is prioritized.
 
 ## 3.2 Deployment: local first
 
@@ -41,6 +54,7 @@ Streamable HTTP stays in the design (§3.3) because the SDK gives it for free an
 
 - Plain MCP, no client-specific extensions. Target spec revision 2025-06-18 minimum; verify the current revision at build time and negotiate down rather than requiring the newest.
 - **stdio is the v1 transport.** Streamable HTTP is implemented but unsupported/undocumented until hosted deployment is on the table. Same tool surface either way.
+- The MCP tool handlers are a thin protocol adapter over the service layer (§3.1); they hold no business logic. This is what keeps a future REST adapter additive rather than a rewrite.
 - **No sampling or elicitation in the core path.** Optional protocol features with uneven client support; a tool that requires them breaks on half the ecosystem. Optional UX only, with a working fallback.
 - `readOnlyHint: true`, `openWorldHint: false` on every tool. These are trust hints, not enforcement — enforcement is §3.7 — but they let clients present the server honestly.
 - Output is text/Markdown. Attach structured content where supported, but the primary payload must be readable without a schema the model has to be taught.
