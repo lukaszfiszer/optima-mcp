@@ -2,27 +2,21 @@
 
 ## 3.1 Layers
 
-```
-MCP client (Claude, ChatGPT, Cursor, Continue, custom agent)
-        │  MCP over stdio | streamable HTTP
-┌───────┴──────────────────────────────────────────────┐
-│ optima-mcp                                           │
-│                                                      │
-│ Tool layer        accounting domain tools            │
-│ Analysis engine   mask expansion, coverage matrix,   │
-│                   rule checks, materiality ranking   │
-│ Semantic layer    knowledge pack (YAML) resolved     │
-│                   against actual schema              │
-│ Schema catalog    introspection, fingerprint, cache  │
-│ SQL gateway       read-only enforcement, params,     │
-│                   timeouts, row caps, PII deny-list, │
-│                   audit log                          │
-└───────┬──────────────────────────────────────────────┘
-        │ TDS, read-only login
-   live SQL Server  |  ephemeral SQL Server (restored backup, optional)
+```mermaid
+flowchart TB
+    Client["MCP client\n(Claude, ChatGPT, Cursor, Continue, custom agent)"]
+    Handlers["MCP tool handlers\nthin: parse input, call domain layer, serialize output"]
+    Domain["Domain layer\nknowledge pack (YAML) resolved against actual schema\n— hides Optima-version differences, returns normalized data"]
+    Catalog["Schema catalog\nintrospection, fingerprint, cache"]
+    Gateway["SQL gateway\nread-only enforcement, params, timeouts,\nrow caps, PII deny-list, audit log"]
+    DB["live SQL Server | ephemeral SQL Server (restored backup, optional)"]
+
+    Client -->|"MCP over stdio"| Handlers --> Domain --> Catalog --> Gateway -->|"TDS, read-only login"| DB
 ```
 
-Each layer is independently testable. Safety lives in the gateway, version drift in the catalog, Optima knowledge in the semantic layer, and the tool layer stays thin.
+The server is a **DB-access wrapper, not a diagnostic engine**: tools return normalized, domain-level data. The domain layer's only job is translating an Optima-version-specific schema into a stable shape — not judging it. Ranking, rule-checking, and interpretation are the calling agent's job.
+
+Handlers hold no business logic, so a REST controller can call the same domain-layer functions later without a rewrite — but that's a one-line consequence of keeping handlers thin, not a layer to build now.
 
 ## 3.2 Deployment: local first
 
@@ -35,12 +29,13 @@ Consequences, all of them simplifying:
 - The SQL Server is reachable directly — either the user's existing Optima instance, or a local one holding a restored backup ([`02`](02-optima-data-model.md) §2.7.1).
 - Audit log is a local file, which is what an auditor wants anyway.
 
-Streamable HTTP stays in the design (§3.3) because the SDK gives it for free and the tool layer is transport-agnostic, but **hosted deployment is out of scope for v1** and must not drive any v1 decision. Revisit once the tool surface has proven itself.
+Streamable HTTP stays in the design (§3.3) because the SDK gives it for free and the domain layer is transport-agnostic, but **hosted deployment is out of scope for v1** and must not drive any v1 decision. Revisit once the tool surface has proven itself.
 
 ## 3.3 Vendor neutrality
 
 - Plain MCP, no client-specific extensions. Target spec revision 2025-06-18 minimum; verify the current revision at build time and negotiate down rather than requiring the newest.
 - **stdio is the v1 transport.** Streamable HTTP is implemented but unsupported/undocumented until hosted deployment is on the table. Same tool surface either way.
+- The MCP tool handlers are a thin protocol adapter over the domain layer (§3.1); they hold no business logic. This is what keeps a future REST adapter additive rather than a rewrite.
 - **No sampling or elicitation in the core path.** Optional protocol features with uneven client support; a tool that requires them breaks on half the ecosystem. Optional UX only, with a working fallback.
 - `readOnlyHint: true`, `openWorldHint: false` on every tool. These are trust hints, not enforcement — enforcement is §3.7 — but they let clients present the server honestly.
 - Output is text/Markdown. Attach structured content where supported, but the primary payload must be readable without a schema the model has to be taught.
@@ -70,7 +65,7 @@ Rules:
 
 1. **Aggregate in SQL, not in JS.** `SUM()` server-side; bring across totals, not rows to add up. This is also the right call for context economy (§3.9).
 2. **Cast on the way out**: `CAST(SUM(x) AS VARCHAR(40))`, parse into `decimal.js`. Never let a monetary value transit as a JS `Number`.
-3. All arithmetic in the analysis engine (materiality ranking, tie-out residuals, Σ Aktywa − Σ Pasywa) uses `Decimal`.
+3. Any arithmetic done while shaping a response (e.g. summing a returned page) uses `Decimal`, never `number`.
 4. Format once, at output, with explicit scale.
 
 Worth a lint rule and a test that fails on any `number`-typed monetary field.
@@ -122,31 +117,25 @@ Plus a **PII deny-list** from Comarch's personal-data inventory, applied at the 
 
 ## 3.8 Output contract
 
-Every tool returns a findings document, not a data dump:
+Every tool returns normalized domain data, not a raw table dump and not a diagnosis:
 
 ```
-SUMMARY     what was checked, which DB/period, verdict
-FINDINGS    ranked by PLN materiality; each: what's wrong, evidence
-            (accounts, positions, amounts), why it matters, remediation
-NEXT STEPS  which tool to call next, which drill-down
-CAVEATS     unresolved schema concepts, buffer entries in/out, assumptions
+DATA        the requested domain entities (accounts, balances, journal
+            lines, ...), same shape regardless of Optima version
+META        which DB/profile/period, row count, truncation info
+CAVEATS     unresolved schema concepts, assumptions made while normalizing
 ```
 
-Remediation comes in two forms:
+The server does not rank, interpret, or recommend — that's the calling agent's job on top of normalized data. Verification and drill-down beyond a tool's own parameters is a read-only SQL snippet the user can paste into Optima's SQL console or SSMS; the server never emits `UPDATE`/`INSERT`/`DELETE` (§3.7).
 
-- **UI steps** — default for anything that changes Optima data. "Księgowość → Zestawienia księgowe → Bilans → pozycja B.II.3 → dodaj maskę `4-9-*`." The Optima UI applies business-logic validation we can't replicate, and keeps the customer inside supported behaviour ([`01`](01-integration-landscape.md)).
-- **SQL snippets, `SELECT` only** — verification and drill-down the user can paste into Optima's SQL console or SSMS.
-
-> **Decision needed.** The brief says "SQL snippet user will execute", which could include mutations. I've narrowed it to read-only SQL, with writes as UI steps: emitting `UPDATE` against Optima tables bypasses validation, is the standard way these DBs get corrupted, and would likely void the customer's support arrangement. The value we add is the diagnosis, which is read-only either way. If you want write-SQL, it should be separately gated, clearly labelled and off by default — say so and I'll design it.
-
-**Language:** findings use Polish domain terms (plan kont, obroty, salda, zestawienie, gałąź, bufor) regardless of conversation language — those are the words on the screen the user is looking at. Surrounding prose follows the user's language.
+**Language:** field values use Polish domain terms (plan kont, obroty, salda, zestawienie, gałąź, bufor) regardless of conversation language — those are the words on the screen the user is looking at. Surrounding prose follows the user's language.
 
 ## 3.9 Context economy
 
 A real chart of accounts runs to thousands of accounts; `CDN.Dekrety` to millions of rows.
 
-- **The model sees findings, not tables.** Aggregation and rule evaluation happen in TS, deterministically. The LLM interprets and prioritises; it doesn't do arithmetic over 5,000 rows.
+- **The model sees normalized domain data, not raw Optima tables.** Aggregation happens in SQL/TS, deterministically; the LLM doesn't do arithmetic over 5,000 rows.
 - **Progressive disclosure.** Summary → drill-down → detail, each taking an explicit narrowing argument.
-- **Hard caps with honest truncation.** Never silently drop rows. "Showing 20 of 347 findings by PLN impact; narrow with `account_prefix=`."
+- **Hard caps with honest truncation.** Never silently drop rows. "Showing 20 of 347 rows; narrow with `account_prefix=`."
 - **Cache by fingerprint** so a multi-tool conversation doesn't re-introspect per call.
 - **MCP resources** for reference material (resolved schema map, knowledge pack, account-type conventions) so clients pull on demand instead of us pushing into every result.
